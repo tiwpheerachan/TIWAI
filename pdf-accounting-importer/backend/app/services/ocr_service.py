@@ -1,10 +1,10 @@
 # backend/app/services/ocr_service.py
 from __future__ import annotations
 
-import os
 import io
 import logging
-from typing import List, Tuple
+import os
+from typing import List, Tuple, Optional
 
 from PIL import Image
 
@@ -18,6 +18,11 @@ def _is_pdf(path: str) -> bool:
     return str(path).lower().endswith(".pdf")
 
 
+def _is_image(path: str) -> bool:
+    p = str(path).lower()
+    return p.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"))
+
+
 def _safe_int(env_name: str, default: int) -> int:
     try:
         return int(os.getenv(env_name, str(default)))
@@ -28,6 +33,14 @@ def _safe_int(env_name: str, default: int) -> int:
 def _safe_float(env_name: str, default: float) -> float:
     try:
         return float(os.getenv(env_name, str(default)))
+    except Exception:
+        return default
+
+
+def _safe_str(env_name: str, default: str) -> str:
+    try:
+        v = os.getenv(env_name, default)
+        return str(v).strip()
     except Exception:
         return default
 
@@ -79,93 +92,185 @@ def _render_pdf_to_images(pdf_path: str, max_pages: int = 20, zoom: float = 2.0)
     return imgs
 
 
+def _open_image_safe(file_path: str) -> Optional[Image.Image]:
+    """
+    Open image file safely as RGB.
+    """
+    try:
+        img = Image.open(file_path)
+        # Ensure loaded
+        img.load()
+        return img.convert("RGB")
+    except Exception as e:
+        logger.warning("open image failed: %s", e)
+        return None
+
+
 # -------------------------
 # OCR Service
 # -------------------------
 class OCRService:
     """
-    OCR pipeline:
-    - PDF with text layer: extract via PyMuPDF (fast)
-    - scanned PDF: render to images -> OCR via PaddleOCR
-    - image: OCR via PaddleOCR
+    OCR pipeline (ฉลาด + deploy-friendly):
+
+    ✅ Always try "fast text extraction" for PDF (ไม่ถือเป็น OCR) — ทำงานได้แม้ปิด OCR
+    - PDF with text layer: extract via PyMuPDF (fast, free)
+
+    ✅ OCR (optional) สำหรับ PDF สแกน/รูปภาพ:
+    - scanned PDF: render to images -> OCR via PaddleOCR (ถ้ามี)
+    - image: OCR via PaddleOCR (ถ้ามี)
+
+    ✅ Safe defaults:
+    - Default OCR_PROVIDER = "none" (กัน Render free พังจาก paddle/pymupdf build issues)
+    - Enable OCR only when explicitly configured and dependencies exist
     """
 
     def __init__(self):
-        self.enable: bool = os.getenv("ENABLE_OCR", "1") == "1"
-        self.provider: str = os.getenv("OCR_PROVIDER", "paddle").strip().lower()  # paddle|document_ai|none
+        # IMPORTANT: แยก "fast PDF text extraction" ออกจาก OCR
+        # OCR_ENABLE: เปิด/ปิดเฉพาะการ OCR ภาพ/สแกน
+        self.enable_ocr: bool = _safe_str("ENABLE_OCR", "1") == "1"
 
+        # Default provider = none เพื่อ deploy ผ่านง่าย (คุณจะเปิดเองตอนพร้อม)
+        # paddle|document_ai|none
+        self.provider: str = _safe_str("OCR_PROVIDER", "none").lower()
+
+        # PDF fast-text threshold (ถ้าดึงได้เกินนี้ ถือว่าเป็น text layer)
+        self.min_chars: int = _safe_int("OCR_MIN_TEXT_CHARS", 80)
+
+        # Render PDF -> images settings (ใช้เมื่อจำเป็นต้อง OCR)
         self.max_pages: int = _safe_int("OCR_MAX_PAGES", 20)
         self.zoom: float = _safe_float("OCR_PDF_ZOOM", 2.0)
-        self.min_chars: int = _safe_int("OCR_MIN_TEXT_CHARS", 80)
+
+        # Paddle options (ถ้าเปิด)
+        self.paddle_lang: str = _safe_str("PADDLE_OCR_LANG", "en")
 
         self._paddle = None
         self._paddle_ready = False
 
-        if self.enable and self.provider == "paddle":
+        # init provider lazily (only when needed)
+        # แต่ถ้าตั้งใจเปิด paddle ก็พยายาม init ให้ก่อน
+        if self.enable_ocr and self.provider == "paddle":
             self._init_paddle()
 
+    # -------------------------
+    # Provider init (lazy & safe)
+    # -------------------------
     def _init_paddle(self) -> None:
         """
         Initialize PaddleOCR safely.
+        - ถ้าไม่มี dependency -> ไม่ล้ม, แค่ปิด OCR ภาพ/สแกน
         """
+        if self._paddle_ready:
+            return
+
         try:
             from paddleocr import PaddleOCR
 
             self._paddle = PaddleOCR(
                 use_angle_cls=True,
-                lang=os.getenv("PADDLE_OCR_LANG", "en"),
+                lang=self.paddle_lang,
                 show_log=False,
             )
             self._paddle_ready = True
+            logger.info("PaddleOCR initialized (lang=%s)", self.paddle_lang)
         except ModuleNotFoundError:
-            logger.warning("paddleocr not installed. OCR will be disabled for images/scanned PDFs.")
+            logger.warning("paddleocr not installed. OCR for images/scanned PDFs will be disabled.")
             self._paddle_ready = False
         except Exception as e:
             logger.warning("Failed to init PaddleOCR: %s", e)
             self._paddle_ready = False
 
-    def ocr_file(self, file_path: str) -> str:
+    def _ensure_provider_ready(self) -> None:
         """
-        คืน text OCR ทั้งไฟล์ (PDF/รูป)
+        Ensure OCR provider is ready (only for OCR part).
         """
-        if not self.enable or self.provider in ("none", "off", "0"):
+        if not self.enable_ocr:
+            return
+
+        if self.provider == "paddle":
+            self._init_paddle()
+
+    # -------------------------
+    # Public API
+    # -------------------------
+    def extract_text(self, file_path: str) -> str:
+        """
+        ฟังก์ชันหลักที่แนะนำให้ใช้:
+        - PDF: พยายามดึง text layer ก่อนเสมอ (ฟรี/เร็ว)
+        - ถ้าเป็นสแกน/รูป: OCR เฉพาะเมื่อ enable_ocr และ provider พร้อม
+        """
+        if not file_path:
+            return ""
+
+        # 1) PDF: always try fast extract (works even when OCR disabled)
+        if _is_pdf(file_path):
+            has_text, text = _pdf_has_text_fast(file_path, min_chars=self.min_chars)
+            if has_text:
+                return text
+
+            # PDF สแกน → OCR (ถ้าเปิดและพร้อม)
+            return self._ocr_scanned_pdf(file_path)
+
+        # 2) Image: OCR (ถ้าเปิดและพร้อม)
+        if _is_image(file_path):
+            return self._ocr_image(file_path)
+
+        # 3) Unknown type
+        logger.warning("Unsupported file type for OCR/text extraction: %s", file_path)
+        return ""
+
+    # -------------------------
+    # OCR implementations
+    # -------------------------
+    def _ocr_scanned_pdf(self, pdf_path: str) -> str:
+        """
+        OCR scanned PDF (render -> OCR)
+        """
+        # ถ้าปิด OCR หรือ provider none → return empty
+        if (not self.enable_ocr) or (self.provider in ("none", "off", "0")):
+            return ""
+
+        if self.provider == "document_ai":
+            return self._ocr_document_ai(pdf_path)
+
+        # default: paddle
+        self._ensure_provider_ready()
+        if not self._paddle_ready:
+            return ""
+
+        try:
+            pages = _render_pdf_to_images(pdf_path, max_pages=self.max_pages, zoom=self.zoom)
+        except Exception as e:
+            logger.warning("render_pdf_to_images failed: %s", e)
+            return ""
+
+        return self._ocr_images_with_paddle(pages)
+
+    def _ocr_image(self, file_path: str) -> str:
+        """
+        OCR image file
+        """
+        if (not self.enable_ocr) or (self.provider in ("none", "off", "0")):
             return ""
 
         if self.provider == "document_ai":
             return self._ocr_document_ai(file_path)
 
         # default: paddle
-        if _is_pdf(file_path):
-            # 1) Try fast text extraction (no OCR) if PDF has text layer
-            has_text, text = _pdf_has_text_fast(file_path, min_chars=self.min_chars)
-            if has_text:
-                return text
-
-            # 2) scanned PDF -> render -> OCR
-            if not self._paddle_ready:
-                return ""
-
-            try:
-                pages = _render_pdf_to_images(file_path, max_pages=self.max_pages, zoom=self.zoom)
-            except Exception as e:
-                logger.warning("render_pdf_to_images failed: %s", e)
-                return ""
-
-            return self._ocr_images_with_paddle(pages)
-
-        # image
+        self._ensure_provider_ready()
         if not self._paddle_ready:
             return ""
 
-        try:
-            img = Image.open(file_path).convert("RGB")
-        except Exception as e:
-            logger.warning("open image failed: %s", e)
+        img = _open_image_safe(file_path)
+        if img is None:
             return ""
 
         return self._ocr_images_with_paddle([img])
 
     def _ocr_images_with_paddle(self, images: List[Image.Image]) -> str:
+        """
+        Run PaddleOCR on list of PIL images.
+        """
         if not self._paddle_ready or not self._paddle:
             return ""
 
@@ -178,9 +283,14 @@ class OCRService:
         chunks: List[str] = []
 
         for img in images:
-            arr = np.array(img)
-            result = self._paddle.ocr(arr, cls=True) or []
+            try:
+                arr = np.array(img)
+                result = self._paddle.ocr(arr, cls=True) or []
+            except Exception as e:
+                logger.warning("PaddleOCR failed on an image: %s", e)
+                continue
 
+            # result format: [ [ [box], (text, score) ], ... ] per line
             for line in result:
                 for item in line:
                     try:
@@ -195,20 +305,25 @@ class OCRService:
         return "\n".join(chunks).strip()
 
     def _ocr_document_ai(self, file_path: str) -> str:
+        """
+        Placeholder for Document AI (future).
+        """
         raise NotImplementedError("document_ai not enabled in this build yet")
 
 
 # -------------------------
-# Compatibility helper
+# Compatibility helper (kept name)
 # -------------------------
 def maybe_ocr_to_text(file_path: str) -> str:
     """
-    ฟังก์ชันนี้มีไว้เพื่อให้ job_worker.py import ได้
-    - จะพยายามดึง text จาก PDF ที่มี text layer ก่อน
-    - ถ้าเป็นสแกน/รูป จะใช้ OCR (paddle) ถ้าเปิด ENABLE_OCR=1
+    backward-compatible helper for job_worker.py
+
+    ✅ behavior (improved):
+    - PDF มี text layer: extract ได้เสมอ (แม้ปิด OCR)
+    - PDF สแกน/รูป: OCR เฉพาะเมื่อเปิด ENABLE_OCR=1 และ OCR_PROVIDER=paddle/document_ai
     """
     try:
-        return OCRService().ocr_file(file_path)
+        return OCRService().extract_text(file_path)
     except Exception as e:
         logger.warning("maybe_ocr_to_text failed: %s", e)
         return ""
