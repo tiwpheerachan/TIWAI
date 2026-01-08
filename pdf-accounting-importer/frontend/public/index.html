@@ -25,21 +25,30 @@
         </div>
       </div>
 
-      <div class="card">
+      <!-- ✅ Backend card + Snow container -->
+      <div class="card backendSnow">
+        <div class="snowBox" id="snowBackend" data-snow="snowBackend" aria-hidden="true"></div>
+
         <div class="h">Backend URL</div>
+
         <div class="field">
-          <label>เชื่อมต่อ API</label>
-          <input id="backendUrl" placeholder="http://localhost:8000" />
+          <label>เลือกปลายทาง (Preset)</label>
+          <select id="backendSelect">
+            <option value="https://ai-1-dq7u.onrender.com">Render (แนะนำ) · https://ai-1-dq7u.onrender.com</option>
+            <option value="http://localhost:8000">Local · http://localhost:8000</option>
+          </select>
         </div>
-        <div class="muted small" style="margin-top:8px">
-          * ถ้าใช้ Docker: backend = http://localhost:8000
+
+        <div class="field">
+          <label>เชื่อมต่อ API (แก้ไขเองได้)</label>
+          <input id="backendUrl" placeholder="https://ai-1-dq7u.onrender.com" />
         </div>
       </div>
 
       <div class="card">
         <div class="h">1) Upload Files</div>
 
-        <div id="drop" class="drop">
+        <div id="drop" class="drop dropPhoto">
           <div class="dropInner">
             <div class="big">ลากไฟล์มาวาง</div>
             <div class="hint">รองรับ PDF และรูปภาพ · หลายร้อยไฟล์ได้</div>
@@ -104,7 +113,7 @@
                 <div class="kpiLabel">ตรวจ</div>
                 <div class="kpiValue" id="kpiReview">0</div>
               </div>
-              <div class="pill review">Needs review</div>
+              <div class="pill review">review</div>
             </div>
 
             <div class="progressLine">
@@ -144,8 +153,8 @@
 
           <div class="sep"></div>
 
-          <button id="btnCsv" class="btn" disabled>ดาวน์โหลด CSV (backend)</button>
-          <button id="btnXlsx" class="btn" disabled>ดาวน์โหลด XLSX (backend)</button>
+          <button id="btnCsv" class="btn" disabled>ดาวน์โหลด CSV</button>
+          <button id="btnXlsx" class="btn" disabled>ดาวน์โหลด XLSX</button>
 
           <button id="btnCsvEdited" class="btn" disabled>CSV (แก้ไขแล้ว)</button>
           <button id="btnXlsxEdited" class="btn" disabled>XLSX (แก้ไขแล้ว)</button>
@@ -157,7 +166,7 @@
           <div class="filters">
             <button class="chip active" data-filter="all">ทั้งหมด</button>
             <button class="chip" data-filter="OK">OK</button>
-            <button class="chip" data-filter="NEEDS_REVIEW">Needs review</button>
+            <button class="chip" data-filter="NEEDS_REVIEW">review</button>
           </div>
           <div class="search">
             <input id="q" placeholder="ค้นหา… (invoice, tax id, amount)" />
@@ -205,5 +214,50 @@
   </div>
 
   <script src="./app.js"></script>
+
+  <!-- ✅ Snow bootstrap: ทำให้ตกชัวร์แม้ app.js ยังไม่ได้ใส่ -->
+  <script>
+    (function(){
+      function createSnowflakes(containerId, snowflakeCount){
+        const snowContainer = document.getElementById(containerId);
+        if(!snowContainer) return;
+
+        snowContainer.innerHTML = "";
+        const snowflakes = ["❄","❅","❆"];
+        const count = Number(snowflakeCount || 50);
+
+for(let i = 0; i < snowflakeCount; i++){
+  const snowflake = document.createElement("div");
+  snowflake.className = "snowflake";
+  snowflake.textContent = snowflakes[Math.floor(Math.random() * snowflakes.length)];
+
+  const left = Math.random() * 100;
+  const delay = Math.random() * 6;
+  const duration = 7 + Math.random() * 9;
+  const drift = (Math.random() - 0.5) * 70;   // ✅ ดริฟต์น้อยลง
+  const size = 9 + Math.random() * 5;         // ✅ เล็กลง
+  const opacity = 0.25 + Math.random() * 0.35;
+
+  const topStart = -18 - Math.random() * 40;  // ✅ เพิ่มบรรทัดนี้
+
+  snowflake.style.left = `${left}%`;
+  snowflake.style.top = `${topStart}px`;      // ✅ เพิ่มบรรทัดนี้
+  snowflake.style.animationDelay = `${delay}s`;
+  snowflake.style.animationDuration = `${duration}s`;
+  snowflake.style.setProperty("--drift", `${drift}px`);
+  snowflake.style.fontSize = `${size}px`;
+  snowflake.style.opacity = `${opacity}`;
+
+  snowContainer.appendChild(snowflake);
+}
+
+      }
+
+      window.addEventListener("load", function(){
+        // ทำให้แน่ใจว่าหิมะเริ่มหลังโหลดเสร็จ
+        createSnowflakes("snowBackend", 20);
+      });
+    })();
+  </script>
 </body>
 </html>

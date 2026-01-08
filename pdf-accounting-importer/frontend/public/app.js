@@ -78,6 +78,100 @@
     return `state=${job.state} · files ${done}/${total} · OK ${ok} · Review ${rev} · Error ${err}`;
   }
 
+  // =========================================================
+  // ✅ Snow: inject CSS + create snowflakes (scoped to backend card)
+  // =========================================================
+  function ensureSnowCSS(){
+    if(document.getElementById("snowStyle_v1")) return;
+
+    const css = `
+/* ===== Snow (scoped) ===== */
+.backendSnow{ position:relative; overflow:hidden; }
+.backendSnow .snowBox{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  z-index:0;
+  border-radius: inherit;
+}
+.backendSnow > *:not(.snowBox){
+  position:relative;
+  z-index:1;
+}
+.snowflake{
+  position:absolute;
+  top:-22px;
+  will-change: transform, opacity;
+  filter: drop-shadow(0 6px 10px rgba(20,40,90,.16));
+  animation-name: snowFall_v1;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+@keyframes snowFall_v1{
+  0%   { transform: translate3d(0,-10px,0); opacity: 0; }
+  10%  { opacity: 1; }
+  100% { transform: translate3d(var(--drift, 0px), calc(100% + 90px), 0); opacity: 0.05; }
+}
+    `.trim();
+
+    const style = document.createElement("style");
+    style.id = "snowStyle_v1";
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
+
+  function createSnowflakes(containerId, snowflakeCount = 50){
+    const snowContainer = document.getElementById(containerId);
+    if(!snowContainer) return;
+
+    // ทำให้แน่ใจว่า CSS อยู่
+    ensureSnowCSS();
+
+    // ล้างของเดิม (กันซ้ำ)
+    snowContainer.innerHTML = "";
+
+    const snowflakes = ["❄","❅","❆"];
+
+for(let i = 0; i < snowflakeCount; i++){
+  const snowflake = document.createElement("div");
+  snowflake.className = "snowflake";
+  snowflake.textContent = snowflakes[Math.floor(Math.random() * snowflakes.length)];
+
+  const left = Math.random() * 100;
+  const delay = Math.random() * 6;
+  const duration = 7 + Math.random() * 9;
+  const drift = (Math.random() - 0.5) * 70;   // ✅ ดริฟต์น้อยลง
+  const size = 9 + Math.random() * 5;         // ✅ เล็กลง
+  const opacity = 0.25 + Math.random() * 0.35;
+
+  const topStart = -18 - Math.random() * 40;  // ✅ เพิ่มบรรทัดนี้
+
+  snowflake.style.left = `${left}%`;
+  snowflake.style.top = `${topStart}px`;      // ✅ เพิ่มบรรทัดนี้
+  snowflake.style.animationDelay = `${delay}s`;
+  snowflake.style.animationDuration = `${duration}s`;
+  snowflake.style.setProperty("--drift", `${drift}px`);
+  snowflake.style.fontSize = `${size}px`;
+  snowflake.style.opacity = `${opacity}`;
+
+  snowContainer.appendChild(snowflake);
+}
+  }
+
+  function initSnow(){
+    // สร้างให้การ์ด backend เท่านั้น
+    const box = el("snowBackend");
+    if(!box) return;
+    createSnowflakes("snowBackend", 20);
+
+    // กันกรณี tab กลับมาแล้ว animation ค้าง
+    document.addEventListener("visibilitychange", () => {
+      if(document.visibilityState === "visible"){
+        createSnowflakes("snowBackend", 20);
+      }
+    });
+  }
+
   // ---- history ----
   function loadHistory(){
     try{
@@ -304,7 +398,9 @@
     try{
       const job = await (await api(`/api/job/${state.jobId}`)).json();
 
-      el("jobMeta").textContent = formatJobMeta(job);
+      const jm = el("jobMeta");
+      if(jm) jm.textContent = formatJobMeta(job);
+
       setProgressUI(job);
       renderQueue(job);
 
@@ -406,10 +502,19 @@
         setEditMode(false);
 
         setBackendUrl(backendUrl);
-        el("backendUrl").value = state.backendUrl;
+
+        // ถ้ามี input backendUrl ให้ sync
+        const backendUrlInput = el("backendUrl");
+        if(backendUrlInput) backendUrlInput.value = state.backendUrl;
+
+        // ถ้ามี dropdown ให้ sync
+        const backendSelect = el("backendSelect");
+        if(backendSelect) backendSelect.value = backendUrl;
 
         state.jobId = jobId;
-        el("jobMeta").textContent = `job_id=${state.jobId} · loading...`;
+
+        const jm = el("jobMeta");
+        if(jm) jm.textContent = `job_id=${state.jobId} · loading...`;
 
         el("btnCsv").disabled = true;
         el("btnXlsx").disabled = true;
@@ -418,7 +523,7 @@
 
         try{
           const job = await (await api(`/api/job/${state.jobId}`)).json();
-          el("jobMeta").textContent = formatJobMeta(job);
+          if(jm) jm.textContent = formatJobMeta(job);
           setProgressUI(job);
           renderQueue(job);
 
@@ -455,8 +560,10 @@
   // ---- edit mode ----
   function setEditMode(on){
     state.editMode = !!on;
-    el("btnSave").disabled = !state.editMode;
-    el("btnEdit").textContent = state.editMode ? "ยกเลิกแก้ไข" : "แก้ไข";
+    const btnSave = el("btnSave");
+    const btnEdit = el("btnEdit");
+    if(btnSave) btnSave.disabled = !state.editMode;
+    if(btnEdit) btnEdit.textContent = state.editMode ? "ยกเลิกแก้ไข" : "แก้ไข";
     renderTable();
   }
 
@@ -529,21 +636,18 @@
     const inner = el("hScrollInner");
     const table = el("resultTable");
 
+    // ถ้า HTML ยังไม่มี dock ก็ไม่พัง (เงียบ ๆ)
     if(!wrap || !dock || !bar || !inner || !table) return;
 
-    // compute scrollable width
     const scrollW = wrap.scrollWidth;
     const clientW = wrap.clientWidth;
 
-    // show dock only if horizontally scrollable
     const need = scrollW > clientW + 2;
     dock.style.display = need ? "flex" : "none";
     if(!need) return;
 
-    // set inner width so bar has same scroll range
     inner.style.width = `${scrollW}px`;
 
-    // sync bar scroll position with wrap
     if(!hsyncLock){
       hsyncLock = true;
       bar.scrollLeft = wrap.scrollLeft;
@@ -592,9 +696,41 @@
 
   // ---- bind ----
   function bind(){
-    el("backendUrl").value = state.backendUrl;
-    el("backendUrl").addEventListener("change", (e) => setBackendUrl(e.target.value));
+    // =========================================================
+    // ✅ Backend preset + sync
+    // =========================================================
+    const backendUrlInput = el("backendUrl");
+    const backendSelect = el("backendSelect");
 
+    const DEFAULT_BACKEND = "https://ai-1-dq7u.onrender.com";
+    const saved = localStorage.getItem("peak_backend_url");
+
+    setBackendUrl(saved || DEFAULT_BACKEND);
+
+    if(backendUrlInput) backendUrlInput.value = state.backendUrl;
+    if(backendSelect) backendSelect.value = state.backendUrl;
+
+    // ถ้ามี dropdown → เปลี่ยนแล้ว sync ไปที่ input
+    backendSelect?.addEventListener("change", () => {
+      setBackendUrl(backendSelect.value);
+      if(backendUrlInput) backendUrlInput.value = state.backendUrl;
+    });
+
+    // ถ้ามี input → ยังให้แก้เองได้ (ตามโค้ดคุณ)
+    backendUrlInput?.addEventListener("change", (e) => {
+      setBackendUrl(e.target.value);
+      if(backendSelect){
+        const v = state.backendUrl;
+        // ถ้าตรง preset ก็ sync dropdown ให้
+        if(v === DEFAULT_BACKEND || v === "http://localhost:8000"){
+          backendSelect.value = v;
+        }
+      }
+    });
+
+    // =========================================================
+    // ✅ File picker
+    // =========================================================
     el("btnPick").addEventListener("click", () => el("file").click());
 
     const fileInput = el("file");
@@ -604,6 +740,7 @@
       setUploadInfo();
     });
 
+    // drag drop
     const drop = el("drop");
     drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("isOver"); });
     drop.addEventListener("dragleave", () => drop.classList.remove("isOver"));
@@ -623,6 +760,7 @@
       setUploadInfo();
     });
 
+    // upload
     el("btnUpload").addEventListener("click", async () => {
       if(!state.files.length) return;
 
@@ -677,6 +815,7 @@
       renderTable();
     });
 
+    // filter chips
     document.querySelectorAll(".chip").forEach((btn) => {
       btn.addEventListener("click", () => {
         document.querySelectorAll(".chip").forEach(b => b.classList.remove("active"));
@@ -686,11 +825,13 @@
       });
     });
 
+    // search
     el("q").addEventListener("input", (e) => {
       state.q = e.target.value.trim();
       renderTable();
     });
 
+    // export raw
     el("btnCsv").addEventListener("click", () => {
       if(!state.jobId) return;
       window.open(`${state.backendUrl}/api/export/${state.jobId}.csv`, "_blank");
@@ -700,6 +841,7 @@
       window.open(`${state.backendUrl}/api/export/${state.jobId}.xlsx`, "_blank");
     });
 
+    // export edited
     el("btnCsvEdited").addEventListener("click", () => {
       if(state.editMode) readEditsFromDOM();
       exportEditedCSV();
@@ -709,6 +851,7 @@
       exportEditedXLSX();
     });
 
+    // edit mode
     el("btnEdit").addEventListener("click", () => {
       if(!state.rows.length){
         alert("ยังไม่มีข้อมูลให้แก้ไข");
@@ -745,5 +888,9 @@
     syncHScrollGeometry();
   }
 
-  bind();
+  // ✅ ให้เริ่มทุกอย่างหลัง DOM พร้อม + เริ่มหิมะด้วย
+  document.addEventListener("DOMContentLoaded", () => {
+    bind();
+    initSnow();
+  });
 })();
