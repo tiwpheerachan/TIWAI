@@ -2,6 +2,7 @@
 """
 Common utilities and patterns for invoice extraction
 Enhanced with AI-ready patterns for better accuracy
+Version 3.0 - With Full Reference Number Support
 """
 from __future__ import annotations
 
@@ -117,7 +118,7 @@ def parse_money(value: str) -> str:
         return ""
 
 # ============================================================
-# Core patterns (enhanced)
+# Core patterns (enhanced with full reference support)
 # ============================================================
 
 # Tax ID patterns
@@ -143,29 +144,74 @@ RE_DATE_EN = re.compile(
     re.IGNORECASE
 )
 
-# Invoice/Document number patterns
-RE_INVOICE_GENERIC = re.compile(
-    r'(?:ใบกำกับ(?:ภาษี)?|Tax\s*Invoice|Invoice|เลขที่(?:เอกสาร)?|Document\s*(?:No\.?|Number)|Doc\s*No\.?|Receipt\s*No\.?)'
-    r'\s*[:#：]?\s*\"?\s*([A-Za-z0-9\-/_.]+)',
+# ============================================================
+# Invoice/Document number patterns (ENHANCED - จับ reference เต็ม)
+# ============================================================
+
+# CRITICAL: Full reference pattern with document number + reference code
+# Format: DOCUMENT-NUMBER MMDD-NNNNNNN
+# Examples:
+#   - TRSPEMKP00-00000-25 1203-0012589
+#   - RCSPXSPB00-00000-25 1205-0012345
+#   - TIV-ABC-12345-250103-1234567 0103-1234567
+RE_INVOICE_WITH_REF = re.compile(
+    r'\b([A-Z]{2,}[A-Z0-9\-/_.]{6,})\s+(\d{4}-\d{6,9})\b',
     re.IGNORECASE
 )
 
-# Platform-specific document numbers
+# Alternative pattern for documents with longer reference codes
+RE_INVOICE_WITH_LONG_REF = re.compile(
+    r'\b([A-Z]{2,}[A-Z0-9\-/_.]{6,})\s+(\d{2,4}[-/]\d{6,10})\b',
+    re.IGNORECASE
+)
+
+# Generic invoice pattern (fallback)
+RE_INVOICE_GENERIC = re.compile(
+    r'(?:ใบกำกับ(?:ภาษี)?|Tax\s*Invoice|Invoice|เลขที่(?:เอกสาร)?|Document\s*(?:No\.?|Number)|Doc\s*No\.?|Receipt\s*No\.?)'
+    r'\s*[:#：]?\s*["\']?\s*([A-Za-z0-9\-/_.]+)',
+    re.IGNORECASE
+)
+
+# Platform-specific document numbers (enhanced)
 RE_SPX_DOC = re.compile(
     r'\b(RCS[A-Z0-9\-/]{10,})\b',
     re.IGNORECASE
 )
+RE_SPX_DOC_WITH_REF = re.compile(
+    r'\b(RCS[A-Z0-9\-/]{10,})\s+(\d{4}-\d{7})\b',
+    re.IGNORECASE
+)
+
 RE_SHOPEE_DOC = re.compile(
     r'\b((?:Shopee-)?TI[VR]-[A-Z0-9]+-\d{5}-\d{6}-\d{7,}|TRS[A-Z0-9\-_/]{8,})\b',
     re.IGNORECASE
 )
+RE_SHOPEE_DOC_WITH_REF = re.compile(
+    r'\b((?:Shopee-)?TI[VR]-[A-Z0-9]+-\d{5}-\d{6}-\d{7,}|TRS[A-Z0-9\-_/]{8,})\s+(\d{4}-\d{7})\b',
+    re.IGNORECASE
+)
+
 RE_LAZADA_DOC = re.compile(
     r'\b(THMPTI\d{16}|(?:LAZ|LZD)[A-Z0-9\-_/.]{6,}|INV[A-Z0-9\-_/.]{6,})\b',
     re.IGNORECASE
 )
+RE_LAZADA_DOC_WITH_REF = re.compile(
+    r'\b(THMPTI\d{16}|(?:LAZ|LZD)[A-Z0-9\-_/.]{6,})\s+(\d{4}-\d{7})\b',
+    re.IGNORECASE
+)
+
 RE_TIKTOK_DOC = re.compile(
     r'\b(TTSTH\d{14,})\b',
     re.IGNORECASE
+)
+RE_TIKTOK_DOC_WITH_REF = re.compile(
+    r'\b(TTSTH\d{14,})\s+(\d{4}-\d{7})\b',
+    re.IGNORECASE
+)
+
+# Reference code patterns (standalone)
+RE_REFERENCE_CODE = re.compile(
+    r'\b(\d{4}-\d{6,9})\b'
 )
 
 # Seller ID / Wallet code patterns
@@ -217,7 +263,7 @@ RE_PAYMENT_METHOD = re.compile(
 )
 
 # Vendor detection patterns
-RE_VENDOR_SHOPEE = re.compile(r'(?:Shopee|ช็อปปี้)', re.IGNORECASE)
+RE_VENDOR_SHOPEE = re.compile(r'(?:Shopee|ช็อปปี้|ช้อปปี้)', re.IGNORECASE)
 RE_VENDOR_LAZADA = re.compile(r'(?:Lazada|ลาซาด้า)', re.IGNORECASE)
 RE_VENDOR_TIKTOK = re.compile(r'(?:TikTok|ติ๊กต๊อก)', re.IGNORECASE)
 RE_VENDOR_SPX = re.compile(r'(?:SPX\s*Express|Standard\s*Express)', re.IGNORECASE)
@@ -302,7 +348,7 @@ def find_vendor_tax_id(text: str, vendor_code: str = '') -> str:
             if m:
                 tax_id = m.group(1)
                 # Exclude known customer tax IDs
-                if tax_id not in ['0105561071873', '0105565027615']:
+                if tax_id not in ['0105561071873', '0105565027615', '0105563022918']:
                     return tax_id
     
     # Generic fallback
@@ -326,37 +372,130 @@ def find_branch(text: str) -> str:
     return "00000"
 
 def find_invoice_no(text: str, platform: str = '') -> str:
-    """Extract invoice/document number"""
+    """
+    Extract invoice/document number with full reference
+    ENHANCED: Now captures full format like "TRSPEMKP00-00000-25 1203-0012589"
+    
+    Args:
+        text: Document text
+        platform: Platform hint (SPX, Shopee, Lazada, TikTok)
+    
+    Returns:
+        Full invoice number with reference code if available
+    """
     t = normalize_text(text)
     
-    # Platform-specific patterns first
+    # ========================================
+    # STEP 1: Try platform-specific WITH reference patterns first
+    # ========================================
     if platform == 'SPX':
+        m = RE_SPX_DOC_WITH_REF.search(t)
+        if m:
+            return f"{m.group(1)} {m.group(2)}"
         m = RE_SPX_DOC.search(t)
         if m:
-            return m.group(1)
+            doc_num = m.group(1)
+            # Try to find reference code near this doc number
+            ref = _find_reference_code_near(t, doc_num)
+            return f"{doc_num} {ref}" if ref else doc_num
+    
     elif platform == 'Shopee':
+        m = RE_SHOPEE_DOC_WITH_REF.search(t)
+        if m:
+            return f"{m.group(1)} {m.group(2)}"
         m = RE_SHOPEE_DOC.search(t)
         if m:
-            return m.group(1)
+            doc_num = m.group(1)
+            ref = _find_reference_code_near(t, doc_num)
+            return f"{doc_num} {ref}" if ref else doc_num
+    
     elif platform == 'Lazada':
+        m = RE_LAZADA_DOC_WITH_REF.search(t)
+        if m:
+            return f"{m.group(1)} {m.group(2)}"
         m = RE_LAZADA_DOC.search(t)
         if m:
-            return m.group(1)
+            doc_num = m.group(1)
+            ref = _find_reference_code_near(t, doc_num)
+            return f"{doc_num} {ref}" if ref else doc_num
+    
     elif platform == 'TikTok':
+        m = RE_TIKTOK_DOC_WITH_REF.search(t)
+        if m:
+            return f"{m.group(1)} {m.group(2)}"
         m = RE_TIKTOK_DOC.search(t)
         if m:
-            return m.group(1)
+            doc_num = m.group(1)
+            ref = _find_reference_code_near(t, doc_num)
+            return f"{doc_num} {ref}" if ref else doc_num
     
-    # Try all platform patterns
+    # ========================================
+    # STEP 2: Try generic full reference pattern
+    # ========================================
+    m = RE_INVOICE_WITH_REF.search(t)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
+    
+    m = RE_INVOICE_WITH_LONG_REF.search(t)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
+    
+    # ========================================
+    # STEP 3: Try all platform-specific patterns (with reference)
+    # ========================================
+    for pattern in [RE_SPX_DOC_WITH_REF, RE_SHOPEE_DOC_WITH_REF, 
+                    RE_LAZADA_DOC_WITH_REF, RE_TIKTOK_DOC_WITH_REF]:
+        m = pattern.search(t)
+        if m:
+            return f"{m.group(1)} {m.group(2)}"
+    
+    # ========================================
+    # STEP 4: Try platform patterns without reference
+    # ========================================
     for pattern in [RE_SPX_DOC, RE_SHOPEE_DOC, RE_LAZADA_DOC, RE_TIKTOK_DOC]:
         m = pattern.search(t)
         if m:
-            return m.group(1)
+            doc_num = m.group(1)
+            ref = _find_reference_code_near(t, doc_num)
+            return f"{doc_num} {ref}" if ref else doc_num
     
-    # Generic invoice pattern
+    # ========================================
+    # STEP 5: Generic invoice pattern (fallback)
+    # ========================================
     m = RE_INVOICE_GENERIC.search(t)
     if m:
-        return m.group(1).strip('"')
+        doc_num = m.group(1).strip('"\'')
+        ref = _find_reference_code_near(t, doc_num)
+        return f"{doc_num} {ref}" if ref else doc_num
+    
+    return ""
+
+def _find_reference_code_near(text: str, doc_number: str, max_distance: int = 50) -> str:
+    """
+    Find reference code (MMDD-NNNNNNN) near a document number
+    
+    Args:
+        text: Full text
+        doc_number: Document number to search near
+        max_distance: Maximum character distance to search
+    
+    Returns:
+        Reference code or empty string
+    """
+    # Find position of doc_number
+    pos = text.find(doc_number)
+    if pos == -1:
+        return ""
+    
+    # Search in nearby text (before and after)
+    start = max(0, pos - max_distance)
+    end = min(len(text), pos + len(doc_number) + max_distance)
+    nearby_text = text[start:end]
+    
+    # Look for reference pattern
+    m = RE_REFERENCE_CODE.search(nearby_text)
+    if m:
+        return m.group(1)
     
     return ""
 
@@ -626,3 +765,43 @@ def find_total_amount(text: str) -> str:
                 return amount
     
     return ""
+
+# ============================================================
+# Export all functions
+# ============================================================
+
+__all__ = [
+    # Normalization
+    'normalize_text',
+    'fmt_tax_13',
+    'fmt_branch_5',
+    'parse_date_to_yyyymmdd',
+    'parse_en_date',
+    'parse_money',
+    
+    # Row template
+    'base_row_dict',
+    
+    # Detection
+    'detect_platform_vendor',
+    
+    # Extraction
+    'find_vendor_tax_id',
+    'find_branch',
+    'find_invoice_no',
+    'find_best_date',
+    'extract_seller_info',
+    'extract_amounts',
+    'find_payment_method',
+    
+    # Validation
+    'validate_tax_id',
+    'validate_date',
+    'compute_wht_from_rate',
+    'format_peak_row',
+    
+    # Backward compatibility
+    'find_tax_id',
+    'find_first_date',
+    'find_total_amount',
+]

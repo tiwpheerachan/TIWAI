@@ -109,8 +109,8 @@ a{ color:inherit; }
 /* ===== Backend URL card (polish) ===== */
 .backendCard{
   background:
-    radial-gradient(600px 220px at 10% 0%, rgba(125,211,252,.18), transparent 55%),
-    radial-gradient(520px 220px at 95% 15%, rgba(253,186,116,.16), transparent 55%),
+    radial-gradient(600px 220px at 10% 0%, rgba(255, 255, 255, 0.147), transparent 55%),
+    radial-gradient(520px 220px at 95% 15%, rgba(255, 255, 255, 0.16), transparent 55%),
     rgba(255,255,255,.58);
   border: 1px solid rgba(20,40,90,.10);
   border-radius: var(--r);
@@ -885,11 +885,53 @@ table.excel tbody tr.review:hover td{ background: rgba(245,158,11,.14); }
    ========================================================= */
 
 /* ===== Backend URL card: clean white + nicer dropdown ===== */
+/* ===== Backend card: typography tuning ===== */
+
+/* หัวข้อหลัก Backend URL → หนาและชัด */
+.backendSnow .h{
+  font-size: 16px;        /* พอดี ไม่ใหญ่เกิน */
+  font-weight: 1000;      /* หนาชัด */
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+}
+
+/* label ทั้งหมด → ไม่หนา */
+.backendSnow .field label{
+  font-size: 12px;
+  font-weight: 500;       /* ✅ ลดความหนา */
+  color: rgba(11,23,51,.65);
+}
+
+/* dropdown text */
+.backendSnow select#backendSelect{
+  font-size: 14px;
+  font-weight: 500;       /* ✅ ไม่หนา */
+  color: #0b1733;
+}
+
+/* input text */
+.backendSnow input#backendUrl{
+  font-size: 14px;
+  font-weight: 500;       /* ✅ ไม่หนา */
+  color: #0b1733;
+}
+
+/* placeholder ให้เบากว่าข้อความจริง */
+.backendSnow input#backendUrl::placeholder{
+  font-weight: 400;
+  color: rgba(11,23,51,.45);
+}
+
+/* option ภายใน dropdown */
+.backendSnow select#backendSelect option{
+  font-weight: 500;
+}
+
 .backendSnow{
   position: relative;
   overflow: hidden;
   border-radius: var(--r);
-  border: 1px solid rgba(20,40,90,.12);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: #ffffff;                 /* ✅ พื้นหลังขาว */
   box-shadow: var(--shadow2);
 }
@@ -977,10 +1019,10 @@ table.excel tbody tr.review:hover td{ background: rgba(245,158,11,.14); }
 .snowflake{
   position:absolute;
   top:-18px;
-  font-size: 10px;                   /* ✅ เล็กลง */
+  font-size: 15px;                   /* ✅ เล็กลง */
   line-height: 1;
   opacity: .45;                      /* ✅ จางลง */
-  color: rgba(59,130,246,.55);       /* ✅ ฟ้าอ่อน */
+  color: rgba(35, 182, 255, 0.789);       /* ✅ ฟ้าอ่อน */
   filter: drop-shadow(0 6px 14px rgba(59,130,246,.10));
   will-change: transform;
   animation: snow-fall linear infinite;
