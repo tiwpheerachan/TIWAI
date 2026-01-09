@@ -1,5 +1,5 @@
 """
-Vendor Code Mapping System (v3.2) — PEAK Importer
+Vendor Code Mapping System (v3.3) — PEAK Importer
 
 Source of Truth:
   client_tax_id (บริษัทเรา เช่น Rabbit/SHD/TopOne)
@@ -7,15 +7,10 @@ Source of Truth:
     -> vendor_code (Cxxxxx)
 
 Goals:
-✅ get_vendor_code() ต้องคืน "Cxxxxx" เสมอเมื่อรู้ client_tax_id และ vendor
-✅ มี fallback ที่ “ไม่คืนชื่อ platform” (กัน D_vendor_code หลุดเป็น Shopee/Lazada)
-✅ normalize tax id / name ให้ robust
-✅ get_expense_category() ให้ตรง rules ที่กำหนด:
-   Lazada / Shopee / TikTok → Marketplace Expense
-   Commission → Selling Expense
-   Advertising → Advertising Expense
-   Goods → Inventory / COGS
-   Shipping/SPX → Shipping Expense
+✅ get_vendor_code() คืน "Cxxxxx" เสมอเมื่อรู้ client + vendor (ไม่ว่า caller จะส่ง vendor_tax_id / vendor_name ผิดรูปแบบ)
+✅ fallback ห้ามคืนชื่อ platform (กัน D_vendor_code หลุดเป็น Shopee/Lazada)
+✅ normalize tax id / name ให้ robust (รวมกรณีมีข้อความปน, OCR, Thai digit)
+✅ get_expense_category() ตาม rules
 """
 
 from __future__ import annotations
@@ -27,25 +22,24 @@ import re
 # Client Tax ID Constants
 # ============================================================
 CLIENT_RABBIT = "0105561071873"
-CLIENT_SHD = "0105563022918"
+CLIENT_SHD    = "0105563022918"
 CLIENT_TOPONE = "0105565027615"
 
 # ============================================================
 # Vendor Tax ID Constants (canonical)
 # ============================================================
-VENDOR_SHOPEE = "0105558019581"             # Shopee (Thailand) Co., Ltd.
-VENDOR_LAZADA = "010556214176"             # Lazada E-Services (Thailand) Co., Ltd.
-VENDOR_TIKTOK = "0105555040244"            # TikTok (your mapping set)
-VENDOR_MARKETPLACE_OTHER = "0105548000241" # Marketplace/ตัวกลาง
-VENDOR_SHOPIFY = "0993000475879"           # Shopify Commerce Singapore
-VENDOR_SPX = "0105561164871"               # SPX Express (Thailand)
+VENDOR_SHOPEE             = "0105558019581"   # Shopee (Thailand) Co., Ltd.
+VENDOR_LAZADA             = "010556214176"    # Lazada E-Services (Thailand) Co., Ltd.
+VENDOR_TIKTOK             = "0105555040244"   # TikTok
+VENDOR_MARKETPLACE_OTHER  = "0105548000241"   # Marketplace/ตัวกลาง
+VENDOR_SHOPIFY            = "0993000475879"   # Shopify Commerce Singapore
+VENDOR_SPX                = "0105561164871"   # SPX Express (Thailand)
 
 # ============================================================
-# 🔥 Source of Truth: Nested dict mapping
+# Source of Truth: Nested dict mapping
 # client_tax_id -> vendor_tax_id -> vendor_code (Cxxxxx)
 # ============================================================
 VENDOR_CODE_BY_CLIENT: Dict[str, Dict[str, str]] = {
-    # ===== Rabbit Client (0105561071873) =====
     CLIENT_RABBIT: {
         VENDOR_SHOPEE: "C00395",
         VENDOR_LAZADA: "C00411",
@@ -54,8 +48,6 @@ VENDOR_CODE_BY_CLIENT: Dict[str, Dict[str, str]] = {
         VENDOR_SHOPIFY: "C01143",
         VENDOR_SPX: "C00563",
     },
-
-    # ===== SHD Client (0105563022918) =====
     CLIENT_SHD: {
         VENDOR_SHOPEE: "C00888",
         VENDOR_LAZADA: "C01132",
@@ -64,29 +56,25 @@ VENDOR_CODE_BY_CLIENT: Dict[str, Dict[str, str]] = {
         VENDOR_SHOPIFY: "C33491",
         VENDOR_SPX: "C01133",
     },
-
-    # ===== TopOne Client (0105565027615) =====
     CLIENT_TOPONE: {
         VENDOR_SHOPEE: "C00020",
         VENDOR_LAZADA: "C00025",
         VENDOR_TIKTOK: "C00051",
         VENDOR_MARKETPLACE_OTHER: "C00095",
         VENDOR_SPX: "C00038",
-        # Shopify (ถ้าต้องการค่อยเติม)
         # VENDOR_SHOPIFY: "Cxxxxx",
     },
 }
 
 # ============================================================
 # Vendor Name -> Vendor Tax ID mapping (fallback by name)
-# Keys should be normalized/contains-match
 # ============================================================
 VENDOR_NAME_TO_TAX: Dict[str, str] = {
     # Shopee
     "shopee": VENDOR_SHOPEE,
     "ช้อปปี้": VENDOR_SHOPEE,
-    "shopee thailand": VENDOR_SHOPEE,
     "shopee (thailand)": VENDOR_SHOPEE,
+    "shopee thailand": VENDOR_SHOPEE,
 
     # Lazada
     "lazada": VENDOR_LAZADA,
@@ -99,7 +87,7 @@ VENDOR_NAME_TO_TAX: Dict[str, str] = {
     "ติ๊กต๊อก": VENDOR_TIKTOK,
     "tiktok shop": VENDOR_TIKTOK,
 
-    # SPX / shipping
+    # SPX
     "spx": VENDOR_SPX,
     "spx express": VENDOR_SPX,
 
@@ -120,7 +108,7 @@ VENDOR_NAME_TO_TAX: Dict[str, str] = {
 # map alias -> canonical vendor tax id
 # ============================================================
 ALIAS_VENDOR_TAX_ID_MAP: Dict[str, str] = {
-    # ใส่เพิ่มได้ เช่น OCR สลับ I/1 หรือขาดตัวเลข
+    # ตัวอย่าง: OCR สลับ I/1, O/0 (เติมเองตามที่เจอ)
     # "010555801958I": VENDOR_SHOPEE,
 }
 
@@ -128,33 +116,51 @@ ALIAS_VENDOR_TAX_ID_MAP: Dict[str, str] = {
 # Normalization helpers
 # ============================================================
 _TAX13_RE = re.compile(r"\b\d{13}\b")
+_CCODE_RE = re.compile(r"^C\d{5}$", re.IGNORECASE)
+
+def _thai_digits_to_arabic(s: str) -> str:
+    # เผื่อ OCR ไทย: ๐๑๒๓๔๕๖๗๘๙
+    th = "๐๑๒๓๔๕๖๗๘๙"
+    ar = "0123456789"
+    trans = str.maketrans({th[i]: ar[i] for i in range(10)})
+    return s.translate(trans)
+
+def _norm_name(name: str) -> str:
+    s = (name or "").strip().lower()
+    s = _thai_digits_to_arabic(s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def _extract_13_digits(s: str) -> str:
+    if not s:
+        return ""
+    s = _thai_digits_to_arabic(s)
+    m = _TAX13_RE.search(s)
+    return m.group(0) if m else ""
 
 def _norm_tax_id(tax_id: str) -> str:
     """
     Normalize tax id:
-    - extract first 13-digit substring if embedded
-    - strip non-digit around
+    - if embedded 13 digits -> take it
+    - if not 13 digits -> return "" (caller should treat as "name", not id)
     - apply alias map
     """
     s = (tax_id or "").strip()
     if not s:
         return ""
+    s = _thai_digits_to_arabic(s)
 
-    m = _TAX13_RE.search(s)
-    if m:
-        s = m.group(0)
-
-    # alias to canonical
-    return ALIAS_VENDOR_TAX_ID_MAP.get(s, s)
-
-def _norm_name(name: str) -> str:
-    s = (name or "").strip().lower()
-    s = re.sub(r"\s+", " ", s)
-    return s
+    d13 = _extract_13_digits(s)
+    if not d13:
+        return ""  # สำคัญ: ถ้าไม่ใช่ 13 หลัก อย่าแกล้งคืน string เดิม
+    return ALIAS_VENDOR_TAX_ID_MAP.get(d13, d13)
 
 def _is_known_client(client_tax_id: str) -> bool:
     c = _norm_tax_id(client_tax_id)
     return c in (CLIENT_RABBIT, CLIENT_SHD, CLIENT_TOPONE)
+
+def _code_is_valid(code: str) -> bool:
+    return bool(code) and bool(_CCODE_RE.match(code.strip()))
 
 # ============================================================
 # Public API: resolve vendor tax id from name
@@ -166,65 +172,52 @@ def get_vendor_tax_id_from_name(vendor_name: str) -> str:
     vn = _norm_name(vendor_name)
     if not vn:
         return ""
-
     for key, tax in VENDOR_NAME_TO_TAX.items():
         if key in vn:
             return tax
     return ""
 
 # ============================================================
-# Public API: main mapping function
+# Public API: main mapping function (HARDENED)
 # ============================================================
-def get_vendor_code(client_tax_id: str, vendor_tax_id: str, vendor_name: str = "") -> str:
+def get_vendor_code(client_tax_id: str, vendor_tax_id: str = "", vendor_name: str = "") -> str:
     """
     Return vendor code (Cxxxxx) for PEAK "ผู้รับเงิน/คู่ค้า".
 
-    Lookup order:
-    1) exact (client_tax_id, vendor_tax_id)
-    2) if vendor_tax_id missing -> resolve from vendor_name then lookup
-    3) if vendor_tax_id exists but wrong/alias -> try vendor_name hint to pick canonical tax
-    4) strict fallback -> "Unknown" (NEVER return platform name)
+    Hardened behavior:
+    - vendor_tax_id ถ้า caller ส่ง "Shopee" มา จะถูกมองว่าเป็นชื่อ ไม่ใช่ tax id
+    - ถ้ารู้ client + vendor (จาก tax หรือ name) ต้องคืน Cxxxxx เสมอ
+    - ห้ามคืนชื่อ platform เด็ดขาด
     """
     c = _norm_tax_id(client_tax_id)
-    v = _norm_tax_id(vendor_tax_id)
 
-    # client unknown -> Unknown (ให้ไป review)
-    if not _is_known_client(c):
+    # client unknown -> Unknown
+    if not c or not _is_known_client(c):
         return "Unknown"
 
-    # 1) exact match
-    if c and v:
+    # 1) try vendor tax id (if truly 13 digits)
+    v = _norm_tax_id(vendor_tax_id)
+    if v:
         code = VENDOR_CODE_BY_CLIENT.get(c, {}).get(v)
-        if code:
+        if _code_is_valid(code or ""):
             return code
 
-    # 2) vendor tax missing -> resolve by name
-    if c and (not v) and vendor_name:
-        v2 = get_vendor_tax_id_from_name(vendor_name)
-        if v2:
-            code = VENDOR_CODE_BY_CLIENT.get(c, {}).get(v2)
-            if code:
-                return code
+    # 2) if vendor_tax_id isn't 13 digits, treat it as name hint too
+    name_hint = vendor_name or vendor_tax_id or ""
+    v2 = get_vendor_tax_id_from_name(name_hint)
+    if v2:
+        code = VENDOR_CODE_BY_CLIENT.get(c, {}).get(v2)
+        if _code_is_valid(code or ""):
+            return code
 
-    # 3) vendor tax exists but might not be canonical -> hint by name
-    if c and vendor_name:
-        v3 = get_vendor_tax_id_from_name(vendor_name)
-        if v3:
-            code = VENDOR_CODE_BY_CLIENT.get(c, {}).get(v3)
-            if code:
-                return code
-
-    # 4) strict fallback (do NOT return platform name)
+    # 3) strict fallback
     return "Unknown"
 
 # ============================================================
-# Optional: detect client by context (ถ้าคุณอยาก auto-detect)
+# Optional: detect client by context (best effort)
 # ============================================================
 def detect_client_from_context(text: str) -> Optional[str]:
-    """
-    Try detect client tax id from doc text context (best effort).
-    """
-    t = (text or "").lower()
+    t = _norm_name(text)
     if CLIENT_RABBIT in t or "rabbit" in t:
         return CLIENT_RABBIT
     if CLIENT_SHD in t or "shd" in t:
@@ -244,9 +237,6 @@ def get_client_name(client_tax_id: str) -> str:
     return "Unknown"
 
 def get_all_vendor_codes_for_client(client_tax_id: str) -> Dict[str, str]:
-    """
-    Return mapping vendor_tax_id -> vendor_code for a client.
-    """
     c = _norm_tax_id(client_tax_id)
     return dict(VENDOR_CODE_BY_CLIENT.get(c, {}))
 
@@ -265,23 +255,18 @@ def get_expense_category(description: str, platform: str = "") -> str:
     desc = _norm_name(description)
     plat = _norm_name(platform)
 
-    # Shipping / SPX
     if any(w in desc for w in ("shipping", "delivery", "ขนส่ง", "จัดส่ง", "spx")) or plat in ("spx", "spx express"):
         return "Shipping Expense"
 
-    # Commission
     if any(w in desc for w in ("commission", "คอมมิชชั่น", "ค่าคอม")):
         return "Selling Expense"
 
-    # Advertising
     if any(w in desc for w in ("advertising", "โฆษณา", "ads", "sponsored")):
         return "Advertising Expense"
 
-    # Goods / inventory
     if any(w in desc for w in ("goods", "สินค้า", "inventory", "cogs", "cost of goods")):
         return "Inventory / COGS"
 
-    # Marketplace default
     if plat in ("shopee", "lazada", "tiktok", "ช้อปปี้", "ลาซาด้า", "ติ๊กต๊อก"):
         return "Marketplace Expense"
     if any(w in desc for w in ("shopee", "lazada", "tiktok", "ช้อปปี้", "ลาซาด้า", "ติ๊กต๊อก")):
@@ -290,9 +275,6 @@ def get_expense_category(description: str, platform: str = "") -> str:
     return "Marketplace Expense"
 
 def format_short_description(platform: str, fee_type: str = "", seller_info: str = "") -> str:
-    """
-    Stable short description (optional helper).
-    """
     parts = []
     if platform:
         parts.append(platform.strip())

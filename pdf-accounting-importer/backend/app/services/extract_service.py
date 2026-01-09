@@ -18,6 +18,15 @@ try:
 except Exception:  # pragma: no cover
     extract_spx = None  # type: ignore
 
+# ✅ NEW: vendor code mapping (Cxxxxx)
+try:
+    from ..extractors.vendor_mapping import get_vendor_code, detect_client_from_context
+    _VENDOR_MAPPING_OK = True
+except Exception:  # pragma: no cover
+    get_vendor_code = None  # type: ignore
+    detect_client_from_context = None  # type: ignore
+    _VENDOR_MAPPING_OK = False
+
 from ..utils.validators import (
     validate_yyyymmdd,
     validate_branch5,
@@ -101,7 +110,6 @@ def _sanitize_ai_row(ai: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         # ignore everything else to prevent column shift / garbage keys
-        # e.g. "account", "group", "platform" etc
         continue
 
     return cleaned
@@ -211,6 +219,57 @@ def _safe_call_extractor(
             pass
 
     return fn(text)  # type: ignore
+
+
+# ============================================================
+# ✅ NEW: Vendor code mapping pass (force D_vendor_code = Cxxxxx)
+# ============================================================
+
+def _apply_vendor_code_mapping(row: Dict[str, Any], text: str, client_tax_id: str) -> Dict[str, Any]:
+    """
+    Force D_vendor_code to be Cxxxxx using vendor_mapping.py
+
+    Rules:
+    - client_tax_id: use provided; if missing, try detect_client_from_context(text)
+    - vendor_tax_id: use row["E_tax_id_13"]
+    - vendor_name hint: use current row["D_vendor_code"] (often "Shopee"/"SPX")
+    - NEVER leave platform name if mapping is possible
+    """
+    if not isinstance(row, dict):
+        return row
+
+    if not _VENDOR_MAPPING_OK or get_vendor_code is None:
+        return row
+
+    ctax = (client_tax_id or "").strip()
+    if not ctax and detect_client_from_context is not None:
+        try:
+            ctax = detect_client_from_context(text) or ""
+        except Exception:
+            ctax = ""
+
+    if not ctax:
+        # can't map without knowing our company
+        return row
+
+    vtax = str(row.get("E_tax_id_13") or "").strip()
+    vname = str(row.get("D_vendor_code") or "").strip()
+
+    try:
+        code = get_vendor_code(client_tax_id=ctax, vendor_tax_id=vtax, vendor_name=vname)
+    except Exception:
+        return row
+
+    # apply only when it looks like a real C-code
+    if isinstance(code, str) and code.startswith("C") and len(code) >= 5:
+        row["D_vendor_code"] = code
+        # optional meta for debugging
+        if os.getenv("STORE_VENDOR_MAPPING_META", "1") == "1":
+            row["_client_tax_id_used"] = ctax
+            row["_vendor_tax_id_used"] = vtax or ""
+            row["_vendor_code_resolved"] = code
+
+    return row
 
 
 # ============================================================
@@ -375,7 +434,11 @@ def extract_row_from_text(
             logger.warning("AI repair failed (file=%s): %s", filename, e)
             _record_ai_error(row, "ai_repair", e)
 
-    # 6) FINALIZE (🔥 จุดกันคอลัมน์เลื่อน)
+    # 6) ✅ Vendor code mapping pass (MUST happen before finalize/lock)
+    # This is what forces D_vendor_code to be Cxxxxx (e.g., SHD+Shopee => C00888)
+    row = _apply_vendor_code_mapping(row, text, client_tax_id)
+
+    # 7) FINALIZE (🔥 จุดกันคอลัมน์เลื่อน)
     row = _finalize_row(row, platform)
 
     return platform, row, errors
