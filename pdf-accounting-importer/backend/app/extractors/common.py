@@ -1,13 +1,22 @@
-# backend/app/extractors/common.py
 """
 Common utilities and patterns for invoice extraction
 Enhanced with AI-ready patterns for better accuracy
-Version 3.0 - With Full Reference Number Support
+Version 3.2 - Line-aware + Full Reference Number Support
+
+⭐ Key upgrades (สำคัญมาก)
+1) normalize_text() "รักษา newline" เพื่อให้ regex แบบ MULTILINE (^ / $) ใช้งานได้จริง
+   - เดิมคุณบีบ whitespace เป็นช่องว่างเดียว ทำให้พวกตาราง/บรรทัดใน PDF พังหมด
+2) find_best_date() ฉลาดขึ้น: ให้คะแนนวันที่ที่อยู่ใกล้คำว่า Invoice/Tax Invoice/Receipt/วันที่/Issue date
+3) extract_amounts() ฉลาดขึ้น: เก็บหลาย candidate แล้วเลือกอันที่ “เหมาะสมสุด”
+   - ลดการหยิบยอดผิดจากบรรทัดอื่น ๆ
+4) find_vendor_tax_id() กันหลุด: เลือกเลขที่อยู่ใกล้ชื่อ platform + กัน client tax id ของ Rabbit/SHD/TopOne
+5) find_invoice_no() แข็งแรงขึ้น: จับ “เอกสาร + reference” ได้ดีขึ้น + กัน false positive
 """
+
 from __future__ import annotations
 
 import re
-from typing import Dict, Any, Tuple, Optional, List
+from typing import Dict, Any, Tuple, List
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
@@ -15,33 +24,75 @@ from decimal import Decimal, InvalidOperation
 # Text normalization utilities
 # ============================================================
 
+_ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\ufeff]")
+
+# Whitespace rules:
+# - keep '\n' for multiline parsing (tables/lines)
+# - collapse spaces/tabs within a line
+# - normalize CRLF -> LF
+_WS_INLINE_RE = re.compile(r"[ \t\f\v]+")
+_WS_MANY_NL_RE = re.compile(r"\n{3,}")
+
+
 def normalize_text(text: str) -> str:
-    """Normalize text for pattern matching"""
+    """
+    Normalize text for pattern matching (LINE-AWARE)
+
+    IMPORTANT:
+    - Keep newlines so that MULTILINE patterns ( ^...$ ) still work.
+    - Remove zero-width chars.
+    - Collapse excessive spaces/tabs but do NOT merge lines.
+    """
     if not text:
         return ""
-    # Remove excessive whitespace
-    text = re.sub(r'\s+', ' ', text)
+
+    s = str(text)
+
+    # Normalize line breaks
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+
     # Remove zero-width characters
-    text = re.sub(r'[\u200b-\u200f\ufeff]', '', text)
-    return text.strip()
+    s = _ZERO_WIDTH_RE.sub("", s)
+
+    # Normalize spaces inside each line (keep line structure)
+    lines = []
+    for line in s.split("\n"):
+        line = _WS_INLINE_RE.sub(" ", line).strip()
+        lines.append(line)
+
+    s = "\n".join(lines).strip()
+    s = _WS_MANY_NL_RE.sub("\n\n", s)  # prevent insane blank pages
+    return s
+
+
+def normalize_one_line(text: str) -> str:
+    """
+    Single-line normalization (for patterns that don't need line anchors).
+    """
+    if not text:
+        return ""
+    s = normalize_text(text)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
 
 def fmt_tax_13(raw: str) -> str:
     """Format to 13-digit tax ID (0105561071873)"""
     if not raw:
         return ""
-    digits = re.sub(r'\D', '', raw)
-    if len(digits) == 13:
-        return digits
-    return ""
+    digits = re.sub(r"\D", "", str(raw))
+    return digits if len(digits) == 13 else ""
+
 
 def fmt_branch_5(raw: str) -> str:
     """Format to 5-digit branch code (00000)"""
     if not raw:
         return "00000"
-    digits = re.sub(r'\D', '', raw)
+    digits = re.sub(r"\D", "", str(raw))
     if digits == "":
         return "00000"
     return digits.zfill(5)[:5]
+
 
 def parse_date_to_yyyymmdd(date_str: str) -> str:
     """
@@ -50,52 +101,58 @@ def parse_date_to_yyyymmdd(date_str: str) -> str:
     """
     if not date_str:
         return ""
-    
-    date_str = date_str.strip()
-    
-    # Try YYYYMMDD format first
-    if re.match(r'^\d{8}$', date_str):
+    s = str(date_str).strip()
+
+    # Allow if it's already YYYYMMDD
+    if re.fullmatch(r"\d{8}", s):
         try:
-            datetime.strptime(date_str, '%Y%m%d')
-            return date_str
-        except:
+            datetime.strptime(s, "%Y%m%d")
+            return s
+        except Exception:
             pass
-    
-    # Try various formats
+
     formats = [
-        '%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y',
-        '%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d',
-        '%d/%m/%y', '%d-%m-%y',
+        "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y",
+        "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d",
+        "%d/%m/%y", "%d-%m-%y", "%d.%m.%y",
     ]
-    
+
     for fmt in formats:
         try:
-            dt = datetime.strptime(date_str, fmt)
-            # Handle 2-digit years
+            dt = datetime.strptime(s, fmt)
             if dt.year < 100:
                 dt = dt.replace(year=dt.year + 2000)
-            return dt.strftime('%Y%m%d')
-        except:
+            return dt.strftime("%Y%m%d")
+        except Exception:
             continue
-    
+
     return ""
+
 
 def parse_en_date(date_str: str) -> str:
     """Parse English date formats like 'Dec 9, 2025' to YYYYMMDD"""
     if not date_str:
         return ""
-    
-    date_str = date_str.strip()
-    formats = ['%b %d, %Y', '%B %d, %Y', '%d %b %Y', '%d %B %Y']
-    
+    s = str(date_str).strip()
+
+    formats = [
+        "%b %d, %Y",
+        "%B %d, %Y",
+        "%d %b %Y",
+        "%d %B %Y",
+        "%b %d %Y",
+        "%B %d %Y",
+    ]
+
     for fmt in formats:
         try:
-            dt = datetime.strptime(date_str, fmt)
-            return dt.strftime('%Y%m%d')
-        except:
+            dt = datetime.strptime(s, fmt)
+            return dt.strftime("%Y%m%d")
+        except Exception:
             continue
-    
+
     return ""
+
 
 def parse_money(value: str) -> str:
     """
@@ -103,44 +160,44 @@ def parse_money(value: str) -> str:
     Removes commas, handles Thai baht symbol
     Returns string with 2 decimal places or empty if invalid
     """
-    if not value:
+    if value is None:
         return ""
-    
-    # Remove currency symbols and whitespace
-    value = str(value).replace('฿', '').replace('THB', '').replace(',', '').strip()
-    
+
+    s = str(value)
+    s = s.replace("฿", "").replace("THB", "").replace("บาท", "")
+    s = s.replace(",", "").strip()
+
+    # Common OCR artifacts
+    s = s.replace("—", "-").replace("–", "-")
+
+    # Disallow negative (for this project)
     try:
-        amount = Decimal(value)
+        amount = Decimal(s)
         if amount < 0:
             return ""
         return f"{amount:.2f}"
     except (InvalidOperation, ValueError):
         return ""
 
+
 # ============================================================
 # Core patterns (enhanced with full reference support)
 # ============================================================
 
 # Tax ID patterns
-RE_TAX13 = re.compile(r'(\d[\d\s-]{11,20}\d)')
-RE_TAX13_STRICT = re.compile(r'\b([0-9]{13})\b')
+RE_TAX13 = re.compile(r"(\d[\d\s-]{11,20}\d)")
+RE_TAX13_STRICT = re.compile(r"\b([0-9]{13})\b")
 
 # Branch patterns
-RE_BRANCH_HEAD_OFFICE = re.compile(
-    r'(?:สำนักงานใหญ่|Head\s*Office|HeadOffice|本社)',
-    re.IGNORECASE
-)
-RE_BRANCH_NUM = re.compile(
-    r'(?:สาขา(?:ที่)?\s*|Branch\s*(?:No\.?|Number)?\s*:?\s*)(\d{1,5})',
-    re.IGNORECASE
-)
+RE_BRANCH_HEAD_OFFICE = re.compile(r"(?:สำนักงานใหญ่|Head\s*Office|HeadOffice|本社)", re.IGNORECASE)
+RE_BRANCH_NUM = re.compile(r"(?:สาขา(?:ที่)?\s*|Branch\s*(?:No\.?|Number)?\s*:?\s*)(\d{1,5})", re.IGNORECASE)
 
 # Date patterns
-RE_DATE_DMYYYY = re.compile(r'(\d{1,2})[\-/\. ](\d{1,2})[\-/\. ](\d{4})')
-RE_DATE_YYYYMD = re.compile(r'(\d{4})[\-/\. ](\d{1,2})[\-/\. ](\d{1,2})')
-RE_DATE_8DIGIT = re.compile(r'\b(\d{8})\b')
+RE_DATE_DMYYYY = re.compile(r"(\d{1,2})[\-/\. ](\d{1,2})[\-/\. ](\d{4})")
+RE_DATE_YYYYMD = re.compile(r"(\d{4})[\-/\. ](\d{1,2})[\-/\. ](\d{1,2})")
+RE_DATE_8DIGIT = re.compile(r"\b(\d{8})\b")
 RE_DATE_EN = re.compile(
-    r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})\b',
+    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})\b",
     re.IGNORECASE
 )
 
@@ -148,125 +205,118 @@ RE_DATE_EN = re.compile(
 # Invoice/Document number patterns (ENHANCED - จับ reference เต็ม)
 # ============================================================
 
-# CRITICAL: Full reference pattern with document number + reference code
-# Format: DOCUMENT-NUMBER MMDD-NNNNNNN
+# Full reference pattern with document number + reference code
 # Examples:
-#   - TRSPEMKP00-00000-25 1203-0012589
-#   - RCSPXSPB00-00000-25 1205-0012345
-#   - TIV-ABC-12345-250103-1234567 0103-1234567
+#   TRSPEMKP00-00000-25 1203-0012589
+#   RCSPXSPB00-00000-25 1205-0012345
 RE_INVOICE_WITH_REF = re.compile(
-    r'\b([A-Z]{2,}[A-Z0-9\-/_.]{6,})\s+(\d{4}-\d{6,9})\b',
+    r"\b([A-Z]{2,}[A-Z0-9\-/_.]{6,})\s+(\d{4}-\d{6,9})\b",
     re.IGNORECASE
 )
 
-# Alternative pattern for documents with longer reference codes
 RE_INVOICE_WITH_LONG_REF = re.compile(
-    r'\b([A-Z]{2,}[A-Z0-9\-/_.]{6,})\s+(\d{2,4}[-/]\d{6,10})\b',
+    r"\b([A-Z]{2,}[A-Z0-9\-/_.]{6,})\s+(\d{2,4}[-/]\d{6,10})\b",
     re.IGNORECASE
 )
 
-# Generic invoice pattern (fallback)
 RE_INVOICE_GENERIC = re.compile(
-    r'(?:ใบกำกับ(?:ภาษี)?|Tax\s*Invoice|Invoice|เลขที่(?:เอกสาร)?|Document\s*(?:No\.?|Number)|Doc\s*No\.?|Receipt\s*No\.?)'
-    r'\s*[:#：]?\s*["\']?\s*([A-Za-z0-9\-/_.]+)',
+    r"(?:ใบกำกับ(?:ภาษี)?|Tax\s*Invoice|Invoice|เลขที่(?:เอกสาร)?|Document\s*(?:No\.?|Number)|Doc\s*No\.?|Receipt\s*No\.?)"
+    r"\s*[:#：]?\s*[\"']?\s*([A-Za-z0-9\-/_.]+)",
     re.IGNORECASE
 )
 
-# Platform-specific document numbers (enhanced)
-RE_SPX_DOC = re.compile(
-    r'\b(RCS[A-Z0-9\-/]{10,})\b',
-    re.IGNORECASE
-)
-RE_SPX_DOC_WITH_REF = re.compile(
-    r'\b(RCS[A-Z0-9\-/]{10,})\s+(\d{4}-\d{7})\b',
-    re.IGNORECASE
-)
+# Platform-specific doc patterns
+RE_SPX_DOC = re.compile(r"\b(RCS[A-Z0-9\-/]{10,})\b", re.IGNORECASE)
+RE_SPX_DOC_WITH_REF = re.compile(r"\b(RCS[A-Z0-9\-/]{10,})\s+(\d{4}-\d{7})\b", re.IGNORECASE)
 
 RE_SHOPEE_DOC = re.compile(
-    r'\b((?:Shopee-)?TI[VR]-[A-Z0-9]+-\d{5}-\d{6}-\d{7,}|TRS[A-Z0-9\-_/]{8,})\b',
+    r"\b((?:Shopee-)?TI[VR]-[A-Z0-9]+-\d{5}-\d{6}-\d{7,}|TRS[A-Z0-9\-_/]{8,})\b",
     re.IGNORECASE
 )
 RE_SHOPEE_DOC_WITH_REF = re.compile(
-    r'\b((?:Shopee-)?TI[VR]-[A-Z0-9]+-\d{5}-\d{6}-\d{7,}|TRS[A-Z0-9\-_/]{8,})\s+(\d{4}-\d{7})\b',
+    r"\b((?:Shopee-)?TI[VR]-[A-Z0-9]+-\d{5}-\d{6}-\d{7,}|TRS[A-Z0-9\-_/]{8,})\s+(\d{4}-\d{7})\b",
     re.IGNORECASE
 )
 
 RE_LAZADA_DOC = re.compile(
-    r'\b(THMPTI\d{16}|(?:LAZ|LZD)[A-Z0-9\-_/.]{6,}|INV[A-Z0-9\-_/.]{6,})\b',
+    r"\b(THMPTI\d{16}|(?:LAZ|LZD)[A-Z0-9\-_/.]{6,}|INV[A-Z0-9\-_/.]{6,})\b",
     re.IGNORECASE
 )
 RE_LAZADA_DOC_WITH_REF = re.compile(
-    r'\b(THMPTI\d{16}|(?:LAZ|LZD)[A-Z0-9\-_/.]{6,})\s+(\d{4}-\d{7})\b',
+    r"\b(THMPTI\d{16}|(?:LAZ|LZD)[A-Z0-9\-_/.]{6,})\s+(\d{4}-\d{7})\b",
     re.IGNORECASE
 )
 
-RE_TIKTOK_DOC = re.compile(
-    r'\b(TTSTH\d{14,})\b',
-    re.IGNORECASE
-)
-RE_TIKTOK_DOC_WITH_REF = re.compile(
-    r'\b(TTSTH\d{14,})\s+(\d{4}-\d{7})\b',
-    re.IGNORECASE
-)
+RE_TIKTOK_DOC = re.compile(r"\b(TTSTH\d{14,})\b", re.IGNORECASE)
+RE_TIKTOK_DOC_WITH_REF = re.compile(r"\b(TTSTH\d{14,})\s+(\d{4}-\d{7})\b", re.IGNORECASE)
 
-# Reference code patterns (standalone)
-RE_REFERENCE_CODE = re.compile(
-    r'\b(\d{4}-\d{6,9})\b'
-)
+# Standalone reference code
+RE_REFERENCE_CODE = re.compile(r"\b(\d{4}-\d{6,9})\b")
 
-# Seller ID / Wallet code patterns
+# Seller / shop meta
 RE_SELLER_ID = re.compile(
-    r'(?:Seller\s*ID|Shop\s*ID|Store\s*ID|รหัสร้านค้า)\s*[:#：]?\s*([A-Z0-9_\-]+)',
+    r"(?:Seller\s*ID|Shop\s*ID|Store\s*ID|รหัสร้านค้า)\s*[:#：]?\s*([A-Z0-9_\-]+)",
     re.IGNORECASE
 )
 RE_USERNAME = re.compile(
-    r'(?:Username|User\s*name|ชื่อผู้ใช้)\s*[:#：]?\s*([A-Za-z0-9_\-]+)',
+    r"(?:Username|User\s*name|ชื่อผู้ใช้)\s*[:#：]?\s*([A-Za-z0-9_\-]+)",
     re.IGNORECASE
 )
-RE_SELLER_CODE = re.compile(
-    r'\b([A-Z0-9]{8,15})\b'
-)
+RE_SELLER_CODE = re.compile(r"\b([A-Z0-9]{8,15})\b")
 
-# Amount patterns (enhanced)
+# Amount patterns
 RE_TOTAL_INC_VAT = re.compile(
-    r'(?:Total\s*(?:amount)?\s*(?:\()?(?:Including|incl\.?|รวม)\s*(?:VAT|Tax|ภาษี)(?:\))?'
-    r'|Grand\s*Total|Amount\s*Due|Total\s*Due|ยอด(?:ที่)?ชำระ|ยอดรวมทั้งสิ้น)'
-    r'\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
+    r"(?:Total\s*(?:amount)?\s*(?:\()?(?:Including|incl\.?|รวม)\s*(?:VAT|Tax|ภาษี)(?:\))?"
+    r"|Grand\s*Total|Amount\s*Due|Total\s*Due|ยอด(?:ที่)?ชำระ|ยอดรวมทั้งสิ้น)"
+    r"\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
     re.IGNORECASE
 )
 
 RE_TOTAL_EX_VAT = re.compile(
-    r'(?:Total\s*(?:amount)?\s*(?:\()?(?:Excluding|excl\.?|ก่อน|ไม่รวม)\s*(?:VAT|Tax|ภาษี)(?:\))?'
-    r'|Subtotal|รวม(?:เงิน)?ก่อน(?:VAT|ภาษี)|จำนวนเงิน(?:รวม)?)'
-    r'\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
+    r"(?:Total\s*(?:amount)?\s*(?:\()?(?:Excluding|excl\.?|ก่อน|ไม่รวม)\s*(?:VAT|Tax|ภาษี)(?:\))?"
+    r"|Subtotal|รวม(?:เงิน)?ก่อน(?:VAT|ภาษี)|จำนวนเงิน(?:รวม)?)"
+    r"\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
     re.IGNORECASE
 )
 
 RE_VAT_AMOUNT = re.compile(
-    r'(?:Total\s*VAT|VAT\s*(?:7%)?|ภาษีมูลค่าเพิ่ม(?:\s*7%)?)'
-    r'\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
+    r"(?:Total\s*VAT|VAT\s*(?:7%)?|ภาษีมูลค่าเพิ่ม(?:\s*7%)?)"
+    r"\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
     re.IGNORECASE
 )
 
 RE_WHT_AMOUNT = re.compile(
-    r'(?:ภาษี(?:เงินได้)?(?:หัก)?(?:\s*ณ\s*ที่จ่าย)?|Withholding\s*Tax|WHT|Withheld\s*Tax)'
-    r'(?:.*?(?:อัตรา|rate|ร้อยละ)\s*([0-9]{1,2})\s*%)?'
-    r'(?:.*?(?:จำนวน(?:เงิน)?|amounting\s*to|เป็นจำนวน))?\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
+    r"(?:ภาษี(?:เงินได้)?(?:หัก)?(?:\s*ณ\s*ที่จ่าย)?|Withholding\s*Tax|WHT|Withheld\s*Tax)"
+    r"(?:.*?(?:อัตรา|rate|ร้อยละ)\s*([0-9]{1,2})\s*%)?"
+    r"(?:.*?(?:จำนวน(?:เงิน)?|amounting\s*to|เป็นจำนวน))?\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
     re.IGNORECASE | re.DOTALL
 )
 
 # Payment method patterns
 RE_PAYMENT_METHOD = re.compile(
-    r'\b(EWL\d{2,6}|TRF\d{2,6}|CSH\d{2,6}|QR|CASH|CARD|TRANSFER|BANK\s*TRANSFER|CREDIT\s*CARD'
-    r'|หักจาก(?:ยอด)?ขาย|โอน|เงินสด)\b',
+    r"\b(EWL\d{2,6}|TRF\d{2,6}|CSH\d{2,6}|QR|CASH|CARD|TRANSFER|BANK\s*TRANSFER|CREDIT\s*CARD"
+    r"|หักจาก(?:ยอด)?ขาย|โอน|เงินสด)\b",
     re.IGNORECASE
 )
 
 # Vendor detection patterns
-RE_VENDOR_SHOPEE = re.compile(r'(?:Shopee|ช็อปปี้|ช้อปปี้)', re.IGNORECASE)
-RE_VENDOR_LAZADA = re.compile(r'(?:Lazada|ลาซาด้า)', re.IGNORECASE)
-RE_VENDOR_TIKTOK = re.compile(r'(?:TikTok|ติ๊กต๊อก)', re.IGNORECASE)
-RE_VENDOR_SPX = re.compile(r'(?:SPX\s*Express|Standard\s*Express)', re.IGNORECASE)
+RE_VENDOR_SHOPEE = re.compile(r"(?:Shopee|ช็อปปี้|ช้อปปี้)", re.IGNORECASE)
+RE_VENDOR_LAZADA = re.compile(r"(?:Lazada|ลาซาด้า)", re.IGNORECASE)
+RE_VENDOR_TIKTOK = re.compile(r"(?:TikTok|ติ๊กต๊อก)", re.IGNORECASE)
+RE_VENDOR_SPX = re.compile(r"(?:SPX\s*Express|Standard\s*Express)", re.IGNORECASE)
+
+# Known client tax IDs (your companies)
+CLIENT_TAX_IDS = {
+    "0105563022918",  # SHD
+    "0105561071873",  # Rabbit
+    "0105565027615",  # TopOne
+}
+
+# Common keywords for better date selection
+DATE_ANCHOR_KEYWORDS = [
+    "invoice date", "tax invoice", "invoice", "receipt", "issue date", "date",
+    "วันที่", "วันที", "ออกใบกำกับ", "ออกใบกํากับ", "วันที่ออก",
+]
 
 # ============================================================
 # Row template (PEAK A-U format)
@@ -278,27 +328,27 @@ def base_row_dict() -> Dict[str, Any]:
     ใช้สำหรับ import เข้าระบบบัญชี PEAK
     """
     return {
-        'A_seq': '1',
-        'B_doc_date': '',
-        'C_reference': '',
-        'D_vendor_code': '',
-        'E_tax_id_13': '',
-        'F_branch_5': '',
-        'G_invoice_no': '',
-        'H_invoice_date': '',
-        'I_tax_purchase_date': '',
-        'J_price_type': '1',
-        'K_account': '',
-        'L_description': '',
-        'M_qty': '1',
-        'N_unit_price': '0',
-        'O_vat_rate': '7%',
-        'P_wht': '0',
-        'Q_payment_method': '',
-        'R_paid_amount': '0',
-        'S_pnd': '',
-        'T_note': '',
-        'U_group': '',
+        "A_seq": "1",
+        "B_doc_date": "",
+        "C_reference": "",
+        "D_vendor_code": "",
+        "E_tax_id_13": "",
+        "F_branch_5": "",
+        "G_invoice_no": "",
+        "H_invoice_date": "",
+        "I_tax_purchase_date": "",
+        "J_price_type": "1",
+        "K_account": "",
+        "L_description": "",
+        "M_qty": "1",
+        "N_unit_price": "0",
+        "O_vat_rate": "7%",
+        "P_wht": "0",
+        "Q_payment_method": "",
+        "R_paid_amount": "0",
+        "S_pnd": "",
+        "T_note": "",
+        "U_group": "",
     }
 
 # ============================================================
@@ -310,328 +360,485 @@ def detect_platform_vendor(text: str) -> Tuple[str, str]:
     Detect platform/vendor from document text
     Returns: (vendor_full_name, vendor_code)
     """
-    t = normalize_text(text)
-    
-    if RE_VENDOR_SPX.search(t):
-        return ('SPX Express (Thailand) Co., Ltd.', 'SPX')
-    if RE_VENDOR_SHOPEE.search(t):
-        return ('Shopee (Thailand) Co., Ltd.', 'Shopee')
-    if RE_VENDOR_LAZADA.search(t):
-        return ('Lazada Limited', 'Lazada')
-    if RE_VENDOR_TIKTOK.search(t):
-        return ('TikTok Shop (Thailand) Ltd.', 'TikTok')
-    
-    return ('', '')
+    t = normalize_one_line(text)
 
-def find_vendor_tax_id(text: str, vendor_code: str = '') -> str:
-    """Extract vendor/seller tax ID (not customer tax ID)"""
+    if RE_VENDOR_SPX.search(t):
+        return ("SPX Express (Thailand) Co., Ltd.", "SPX")
+    if RE_VENDOR_SHOPEE.search(t):
+        return ("Shopee (Thailand) Co., Ltd.", "Shopee")
+    if RE_VENDOR_LAZADA.search(t):
+        return ("Lazada Limited", "Lazada")
+    if RE_VENDOR_TIKTOK.search(t):
+        return ("TikTok Shop (Thailand) Ltd.", "TikTok")
+
+    return ("", "")
+
+
+def _tax_id_candidates_with_positions(text: str) -> List[Tuple[int, str]]:
+    """
+    Return list of (pos, tax_id_13) found in text.
+    """
     t = normalize_text(text)
-    
+    out: List[Tuple[int, str]] = []
+    for m in RE_TAX13_STRICT.finditer(t):
+        out.append((m.start(), m.group(1)))
+    return out
+
+
+def find_vendor_tax_id(text: str, vendor_code: str = "") -> str:
+    """
+    Extract vendor/seller tax ID (not customer tax ID)
+
+    Strategy:
+    1) Vendor-specific patterns when available (more reliable).
+    2) If platform doc has multiple tax ids, prefer the one closest to vendor name keywords.
+    3) Never return your known client tax ids (Rabbit/SHD/TopOne).
+    4) Fallback to first non-client tax id.
+    """
+    t = normalize_text(text)
+
+    # ----------------------------
     # Vendor-specific patterns
-    if vendor_code == 'SPX':
-        m = re.search(r'Tax\s*ID\s*No\.?\s*([0-9]{13})', t, re.IGNORECASE)
-        if m:
+    # ----------------------------
+    if vendor_code == "SPX":
+        m = re.search(r"Tax\s*ID\s*No\.?\s*([0-9]{13})", t, re.IGNORECASE)
+        if m and m.group(1) not in CLIENT_TAX_IDS:
             return m.group(1)
-    
-    elif vendor_code == 'TikTok':
-        m = re.search(r'Tax\s*Registration\s*Number\s*[:#：]?\s*([0-9]{13})', t, re.IGNORECASE)
-        if m:
+
+    if vendor_code == "TikTok":
+        m = re.search(r"Tax\s*Registration\s*Number\s*[:#：]?\s*([0-9]{13})", t, re.IGNORECASE)
+        if m and m.group(1) not in CLIENT_TAX_IDS:
             return m.group(1)
-    
-    elif vendor_code in ('Shopee', 'Lazada'):
+
+    if vendor_code in ("Shopee", "Lazada"):
         patterns = [
-            r'(?:เลขประจำตัวผู้เสียภาษี(?:อากร)?|Tax\s*(?:ID|Registration)\s*(?:No\.?|Number)?)\s*[:#：]?\s*([0-9]{13})',
+            r"(?:เลขประจำตัวผู้เสียภาษี(?:อากร)?|Tax\s*(?:ID|Registration)\s*(?:No\.?|Number)?)\s*[:#：]?\s*([0-9]{13})",
         ]
-        
-        for pattern in patterns:
-            m = re.search(pattern, t, re.IGNORECASE)
+        for pat in patterns:
+            m = re.search(pat, t, re.IGNORECASE)
             if m:
                 tax_id = m.group(1)
-                # Exclude known customer tax IDs
-                if tax_id not in ['0105561071873', '0105565027615', '0105563022918']:
+                if tax_id and tax_id not in CLIENT_TAX_IDS:
                     return tax_id
-    
-    # Generic fallback
-    m = RE_TAX13_STRICT.search(t)
-    if m:
-        return m.group(1)
-    
-    return ""
+
+    # ----------------------------
+    # Proximity scoring fallback
+    # ----------------------------
+    candidates = _tax_id_candidates_with_positions(t)
+    if not candidates:
+        return ""
+
+    # vendor keyword anchors
+    vendor_kw = ""
+    if vendor_code == "Shopee":
+        vendor_kw = "shopee"
+    elif vendor_code == "Lazada":
+        vendor_kw = "lazada"
+    elif vendor_code == "TikTok":
+        vendor_kw = "tiktok"
+    elif vendor_code == "SPX":
+        vendor_kw = "spx"
+
+    anchor_positions: List[int] = []
+    if vendor_kw:
+        for m in re.finditer(vendor_kw, t, re.IGNORECASE):
+            anchor_positions.append(m.start())
+
+    # score: minimal distance to anchor, skip client ids
+    best_tax = ""
+    best_score = None
+
+    for pos, tax in candidates:
+        if tax in CLIENT_TAX_IDS:
+            continue
+        if not anchor_positions:
+            # no anchors: pick first non-client
+            return tax
+
+        dist = min(abs(pos - a) for a in anchor_positions)
+        if best_score is None or dist < best_score:
+            best_score = dist
+            best_tax = tax
+
+    return best_tax or ""
+
 
 def find_branch(text: str) -> str:
     """Extract branch code (00000 for head office)"""
     t = normalize_text(text)
-    
+
     if RE_BRANCH_HEAD_OFFICE.search(t):
         return "00000"
-    
+
     m = RE_BRANCH_NUM.search(t)
     if m:
         return fmt_branch_5(m.group(1))
-    
+
     return "00000"
 
-def find_invoice_no(text: str, platform: str = '') -> str:
+
+def _find_reference_code_near(text: str, doc_number: str, max_distance: int = 80) -> str:
     """
-    Extract invoice/document number with full reference
-    ENHANCED: Now captures full format like "TRSPEMKP00-00000-25 1203-0012589"
-    
-    Args:
-        text: Document text
-        platform: Platform hint (SPX, Shopee, Lazada, TikTok)
-    
+    Find reference code (MMDD-NNNNNNN) near a document number.
+    We search near doc_number position in LINE-AWARE text.
+    """
+    if not doc_number:
+        return ""
+
+    pos = text.find(doc_number)
+    if pos == -1:
+        return ""
+
+    start = max(0, pos - max_distance)
+    end = min(len(text), pos + len(doc_number) + max_distance)
+    nearby = text[start:end]
+
+    m = RE_REFERENCE_CODE.search(nearby)
+    return m.group(1) if m else ""
+
+
+def _clean_doc_number(s: str) -> str:
+    if not s:
+        return ""
+    x = str(s).strip().strip('"').strip("'")
+    # remove trailing punctuation
+    x = re.sub(r"[,\.;:]+$", "", x)
+    return x
+
+
+def find_invoice_no(text: str, platform: str = "") -> str:
+    """
+    Extract invoice/document number with full reference.
+    ENHANCED: captures "DOC ... REF" and tries to attach ref code if near.
+
     Returns:
-        Full invoice number with reference code if available
+      - "DOC REF" if ref exists
+      - else "DOC"
     """
     t = normalize_text(text)
-    
-    # ========================================
-    # STEP 1: Try platform-specific WITH reference patterns first
-    # ========================================
-    if platform == 'SPX':
+
+    # 1) Platform-specific WITH reference first (highest precision)
+    if platform == "SPX":
         m = RE_SPX_DOC_WITH_REF.search(t)
         if m:
             return f"{m.group(1)} {m.group(2)}"
         m = RE_SPX_DOC.search(t)
         if m:
-            doc_num = m.group(1)
-            # Try to find reference code near this doc number
-            ref = _find_reference_code_near(t, doc_num)
-            return f"{doc_num} {ref}" if ref else doc_num
-    
-    elif platform == 'Shopee':
+            doc = m.group(1)
+            ref = _find_reference_code_near(t, doc)
+            return f"{doc} {ref}" if ref else doc
+
+    if platform == "Shopee":
         m = RE_SHOPEE_DOC_WITH_REF.search(t)
         if m:
             return f"{m.group(1)} {m.group(2)}"
         m = RE_SHOPEE_DOC.search(t)
         if m:
-            doc_num = m.group(1)
-            ref = _find_reference_code_near(t, doc_num)
-            return f"{doc_num} {ref}" if ref else doc_num
-    
-    elif platform == 'Lazada':
+            doc = m.group(1)
+            ref = _find_reference_code_near(t, doc)
+            return f"{doc} {ref}" if ref else doc
+
+    if platform == "Lazada":
         m = RE_LAZADA_DOC_WITH_REF.search(t)
         if m:
             return f"{m.group(1)} {m.group(2)}"
         m = RE_LAZADA_DOC.search(t)
         if m:
-            doc_num = m.group(1)
-            ref = _find_reference_code_near(t, doc_num)
-            return f"{doc_num} {ref}" if ref else doc_num
-    
-    elif platform == 'TikTok':
+            doc = m.group(1)
+            ref = _find_reference_code_near(t, doc)
+            return f"{doc} {ref}" if ref else doc
+
+    if platform == "TikTok":
         m = RE_TIKTOK_DOC_WITH_REF.search(t)
         if m:
             return f"{m.group(1)} {m.group(2)}"
         m = RE_TIKTOK_DOC.search(t)
         if m:
-            doc_num = m.group(1)
-            ref = _find_reference_code_near(t, doc_num)
-            return f"{doc_num} {ref}" if ref else doc_num
-    
-    # ========================================
-    # STEP 2: Try generic full reference pattern
-    # ========================================
+            doc = m.group(1)
+            ref = _find_reference_code_near(t, doc)
+            return f"{doc} {ref}" if ref else doc
+
+    # 2) Generic full reference patterns
     m = RE_INVOICE_WITH_REF.search(t)
     if m:
         return f"{m.group(1)} {m.group(2)}"
-    
+
     m = RE_INVOICE_WITH_LONG_REF.search(t)
     if m:
         return f"{m.group(1)} {m.group(2)}"
-    
-    # ========================================
-    # STEP 3: Try all platform-specific patterns (with reference)
-    # ========================================
-    for pattern in [RE_SPX_DOC_WITH_REF, RE_SHOPEE_DOC_WITH_REF, 
-                    RE_LAZADA_DOC_WITH_REF, RE_TIKTOK_DOC_WITH_REF]:
-        m = pattern.search(t)
+
+    # 3) Try any platform patterns (with ref)
+    for pat in (RE_SPX_DOC_WITH_REF, RE_SHOPEE_DOC_WITH_REF, RE_LAZADA_DOC_WITH_REF, RE_TIKTOK_DOC_WITH_REF):
+        m = pat.search(t)
         if m:
             return f"{m.group(1)} {m.group(2)}"
-    
-    # ========================================
-    # STEP 4: Try platform patterns without reference
-    # ========================================
-    for pattern in [RE_SPX_DOC, RE_SHOPEE_DOC, RE_LAZADA_DOC, RE_TIKTOK_DOC]:
-        m = pattern.search(t)
+
+    # 4) Try platform patterns (without ref)
+    for pat in (RE_SPX_DOC, RE_SHOPEE_DOC, RE_LAZADA_DOC, RE_TIKTOK_DOC):
+        m = pat.search(t)
         if m:
-            doc_num = m.group(1)
-            ref = _find_reference_code_near(t, doc_num)
-            return f"{doc_num} {ref}" if ref else doc_num
-    
-    # ========================================
-    # STEP 5: Generic invoice pattern (fallback)
-    # ========================================
+            doc = m.group(1)
+            ref = _find_reference_code_near(t, doc)
+            return f"{doc} {ref}" if ref else doc
+
+    # 5) Generic invoice field (fallback)
     m = RE_INVOICE_GENERIC.search(t)
     if m:
-        doc_num = m.group(1).strip('"\'')
-        ref = _find_reference_code_near(t, doc_num)
-        return f"{doc_num} {ref}" if ref else doc_num
-    
+        doc = _clean_doc_number(m.group(1))
+        # guard: avoid capturing very short junk
+        if len(doc) >= 6:
+            ref = _find_reference_code_near(t, doc)
+            return f"{doc} {ref}" if ref else doc
+
     return ""
 
-def _find_reference_code_near(text: str, doc_number: str, max_distance: int = 50) -> str:
+
+def _date_candidates_with_positions(text: str) -> List[Tuple[int, str]]:
     """
-    Find reference code (MMDD-NNNNNNN) near a document number
-    
-    Args:
-        text: Full text
-        doc_number: Document number to search near
-        max_distance: Maximum character distance to search
-    
-    Returns:
-        Reference code or empty string
+    Return list of (pos, yyyymmdd) candidates extracted from multiple patterns.
     """
-    # Find position of doc_number
-    pos = text.find(doc_number)
-    if pos == -1:
-        return ""
-    
-    # Search in nearby text (before and after)
-    start = max(0, pos - max_distance)
-    end = min(len(text), pos + len(doc_number) + max_distance)
-    nearby_text = text[start:end]
-    
-    # Look for reference pattern
-    m = RE_REFERENCE_CODE.search(nearby_text)
-    if m:
-        return m.group(1)
-    
-    return ""
+    t = normalize_text(text)
+    out: List[Tuple[int, str]] = []
+
+    for m in RE_DATE_EN.finditer(t):
+        ds = f"{m.group(1)} {m.group(2)}, {m.group(3)}"
+        y = parse_en_date(ds)
+        if y:
+            out.append((m.start(), y))
+
+    for m in RE_DATE_YYYYMD.finditer(t):
+        ds = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        y = parse_date_to_yyyymmdd(ds)
+        if y:
+            out.append((m.start(), y))
+
+    for m in RE_DATE_DMYYYY.finditer(t):
+        ds = f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
+        y = parse_date_to_yyyymmdd(ds)
+        if y:
+            out.append((m.start(), y))
+
+    for m in RE_DATE_8DIGIT.finditer(t):
+        y = parse_date_to_yyyymmdd(m.group(1))
+        if y:
+            out.append((m.start(), y))
+
+    return out
+
 
 def find_best_date(text: str) -> str:
-    """Find best date from text - Returns YYYYMMDD format"""
+    """
+    Find best date from text (YYYYMMDD).
+
+    New scoring:
+    - Prefer date near anchor keywords (invoice date / วันที่ / issue date)
+    - If multiple, pick the best-scored; tie-breaker: latest date
+    """
     t = normalize_text(text)
-    
-    candidates = []
-    
-    # English date format
-    for m in RE_DATE_EN.finditer(t):
-        date_str = f"{m.group(1)} {m.group(2)}, {m.group(3)}"
-        yyyymmdd = parse_en_date(date_str)
-        if yyyymmdd:
-            candidates.append(yyyymmdd)
-    
-    # YYYY-MM-DD format
-    for m in RE_DATE_YYYYMD.finditer(t):
-        date_str = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-        yyyymmdd = parse_date_to_yyyymmdd(date_str)
-        if yyyymmdd:
-            candidates.append(yyyymmdd)
-    
-    # DD/MM/YYYY format
-    for m in RE_DATE_DMYYYY.finditer(t):
-        date_str = f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
-        yyyymmdd = parse_date_to_yyyymmdd(date_str)
-        if yyyymmdd:
-            candidates.append(yyyymmdd)
-    
-    # 8-digit format
-    for m in RE_DATE_8DIGIT.finditer(t):
-        yyyymmdd = parse_date_to_yyyymmdd(m.group(1))
-        if yyyymmdd:
-            candidates.append(yyyymmdd)
-    
-    if candidates:
-        return max(candidates)
-    
-    return ""
+    candidates = _date_candidates_with_positions(t)
+    if not candidates:
+        return ""
+
+    anchors: List[int] = []
+    low = t.lower()
+    for kw in DATE_ANCHOR_KEYWORDS:
+        idx = low.find(kw)
+        while idx != -1:
+            anchors.append(idx)
+            idx = low.find(kw, idx + 1)
+
+    def score(pos: int) -> int:
+        if not anchors:
+            return 10_000_000  # no anchors -> neutral
+        return min(abs(pos - a) for a in anchors)
+
+    best = None  # (score, -date_int, yyyymmdd)
+    for pos, y in candidates:
+        try:
+            y_int = int(y)
+        except Exception:
+            continue
+        s = score(pos)
+        key = (s, -y_int, y)
+        if best is None or key < best:
+            best = key
+
+    return best[2] if best else ""
+
 
 def extract_seller_info(text: str) -> Dict[str, str]:
     """Extract seller/shop information"""
     t = normalize_text(text)
-    info = {'seller_id': '', 'username': '', 'seller_code': ''}
-    
+    info = {"seller_id": "", "username": "", "seller_code": ""}
+
     m = RE_SELLER_ID.search(t)
     if m:
-        info['seller_id'] = m.group(1)
-    
+        info["seller_id"] = m.group(1)
+
     m = RE_USERNAME.search(t)
     if m:
-        info['username'] = m.group(1)
-    
+        info["username"] = m.group(1)
+
+    # seller_code: pick the first plausible code
     for m in RE_SELLER_CODE.finditer(t):
         code = m.group(1)
-        if not code.isdigit() and len(code) >= 8:
-            info['seller_code'] = code
+        if code.isdigit():
+            continue
+        if code.startswith("010") and len(code) == 13:
+            continue
+        if len(code) >= 8:
+            info["seller_code"] = code
             break
-    
+
     return info
 
+
+def _best_amount_candidate(matches: List[Tuple[int, str]], anchors: List[str], text: str) -> str:
+    """
+    Choose best amount candidate by proximity to anchors + sane numeric check.
+    matches = [(pos, money_str), ...]
+    """
+    if not matches:
+        return ""
+
+    t = text.lower()
+    anchor_pos: List[int] = []
+    for kw in anchors:
+        idx = t.find(kw)
+        while idx != -1:
+            anchor_pos.append(idx)
+            idx = t.find(kw, idx + 1)
+
+    def dist(pos: int) -> int:
+        if not anchor_pos:
+            return 10_000_000
+        return min(abs(pos - a) for a in anchor_pos)
+
+    best = None  # (dist, -amount, str)
+    for pos, amt_str in matches:
+        amt = parse_money(amt_str)
+        if not amt:
+            continue
+        try:
+            a = Decimal(amt)
+        except Exception:
+            continue
+        key = (dist(pos), -a, amt)
+        if best is None or key < best:
+            best = key
+
+    return best[2] if best else ""
+
+
 def extract_amounts(text: str) -> Dict[str, str]:
-    """Extract financial amounts from document"""
+    """
+    Extract financial amounts from document (subtotal/vat/total/wht).
+
+    New logic:
+    - Collect multiple candidates for total/subtotal/vat then choose the best by proximity.
+    - Still calculate missing values if possible.
+    """
     t = normalize_text(text)
     amounts = {
-        'subtotal': '',
-        'vat': '',
-        'total': '',
-        'wht_rate': '',
-        'wht_amount': '',
+        "subtotal": "",
+        "vat": "",
+        "total": "",
+        "wht_rate": "",
+        "wht_amount": "",
     }
-    
-    m = RE_TOTAL_INC_VAT.search(t)
-    if m:
-        amounts['total'] = parse_money(m.group(1))
-    
-    m = RE_TOTAL_EX_VAT.search(t)
-    if m:
-        amounts['subtotal'] = parse_money(m.group(1))
-    
-    m = RE_VAT_AMOUNT.search(t)
-    if m:
-        amounts['vat'] = parse_money(m.group(1))
-    
-    m = RE_WHT_AMOUNT.search(t)
-    if m:
-        if m.lastindex >= 2:
+
+    # Collect candidates
+    total_matches: List[Tuple[int, str]] = [(m.start(), m.group(1)) for m in RE_TOTAL_INC_VAT.finditer(t)]
+    sub_matches: List[Tuple[int, str]] = [(m.start(), m.group(1)) for m in RE_TOTAL_EX_VAT.finditer(t)]
+    vat_matches: List[Tuple[int, str]] = [(m.start(), m.group(1)) for m in RE_VAT_AMOUNT.finditer(t)]
+
+    amounts["total"] = _best_amount_candidate(
+        total_matches,
+        anchors=["total", "grand total", "amount due", "ยอดชำระ", "ยอดรวม", "including"],
+        text=t,
+    )
+    amounts["subtotal"] = _best_amount_candidate(
+        sub_matches,
+        anchors=["subtotal", "excluding", "ก่อน", "ไม่รวม", "รวมก่อน"],
+        text=t,
+    )
+    amounts["vat"] = _best_amount_candidate(
+        vat_matches,
+        anchors=["vat", "ภาษีมูลค่าเพิ่ม", "total vat"],
+        text=t,
+    )
+
+    # WHT (single best match, but regex may return multiple)
+    wht_best = None  # (dist, amount, rate)
+    for m in RE_WHT_AMOUNT.finditer(t):
+        rate = ""
+        amt_raw = ""
+        if m.lastindex and m.lastindex >= 2:
             if m.group(1):
-                amounts['wht_rate'] = f"{m.group(1)}%"
-            amounts['wht_amount'] = parse_money(m.group(2))
+                rate = f"{m.group(1)}%"
+            amt_raw = m.group(2)
         else:
-            amounts['wht_amount'] = parse_money(m.group(1) if m.lastindex == 1 else m.group(2))
-    
+            # fallback
+            amt_raw = m.group(1) if m.lastindex == 1 else (m.group(2) if m.lastindex else "")
+
+        amt = parse_money(amt_raw)
+        if not amt:
+            continue
+
+        pos = m.start()
+        # anchor: "หัก ณ ที่จ่าย" / "withholding"
+        d = min(
+            abs(pos - i)
+            for i in ([p for p in (t.lower().find("withholding"), t.lower().find("หักภาษี"), t.lower().find("ณ ที่จ่าย")) if p != -1] or [0])
+        )
+        key = (d, Decimal(amt))
+        if wht_best is None or key < (wht_best[0], Decimal(wht_best[1])):
+            wht_best = (d, amt, rate)
+
+    if wht_best:
+        amounts["wht_amount"] = wht_best[1]
+        amounts["wht_rate"] = wht_best[2] or ""
+
     # Calculate missing values
-    if amounts['subtotal'] and amounts['vat'] and not amounts['total']:
-        try:
-            sub = Decimal(amounts['subtotal'])
-            vat = Decimal(amounts['vat'])
-            amounts['total'] = f"{(sub + vat):.2f}"
-        except:
-            pass
-    
-    if amounts['total'] and amounts['vat'] and not amounts['subtotal']:
-        try:
-            total = Decimal(amounts['total'])
-            vat = Decimal(amounts['vat'])
-            amounts['subtotal'] = f"{(total - vat):.2f}"
-        except:
-            pass
-    
-    if amounts['subtotal'] and not amounts['vat']:
-        try:
-            sub = Decimal(amounts['subtotal'])
-            vat = sub * Decimal('0.07')
-            amounts['vat'] = f"{vat:.2f}"
-            if not amounts['total']:
-                amounts['total'] = f"{(sub + vat):.2f}"
-        except:
-            pass
-    
+    try:
+        if amounts["subtotal"] and amounts["vat"] and not amounts["total"]:
+            sub = Decimal(amounts["subtotal"])
+            v = Decimal(amounts["vat"])
+            amounts["total"] = f"{(sub + v):.2f}"
+
+        if amounts["total"] and amounts["vat"] and not amounts["subtotal"]:
+            tot = Decimal(amounts["total"])
+            v = Decimal(amounts["vat"])
+            amounts["subtotal"] = f"{(tot - v):.2f}"
+
+        # If only subtotal found, infer VAT and total (7%)
+        if amounts["subtotal"] and not amounts["vat"]:
+            sub = Decimal(amounts["subtotal"])
+            v = (sub * Decimal("0.07"))
+            amounts["vat"] = f"{v:.2f}"
+            if not amounts["total"]:
+                amounts["total"] = f"{(sub + v):.2f}"
+    except Exception:
+        pass
+
     return amounts
 
-def find_payment_method(text: str, platform: str = '') -> str:
+
+def find_payment_method(text: str, platform: str = "") -> str:
     """Extract payment method"""
     t = normalize_text(text)
-    
-    if platform in ('Shopee', 'Lazada', 'TikTok'):
-        if 'หักจาก' in t or 'deduct' in t.lower():
-            return 'หักจากยอดขาย'
-    
+
+    if platform in ("Shopee", "Lazada", "TikTok"):
+        low = t.lower()
+        if "หักจาก" in t or "deduct" in low:
+            return "หักจากยอดขาย"
+
     m = RE_PAYMENT_METHOD.search(t)
     if m:
-        return m.group(1).upper().replace(' ', '')
-    
-    return ''
+        return m.group(1).upper().replace(" ", "")
+
+    return ""
+
 
 # ============================================================
 # Validation and formatting
@@ -639,132 +846,138 @@ def find_payment_method(text: str, platform: str = '') -> str:
 
 def validate_tax_id(tax_id: str) -> bool:
     """Validate 13-digit tax ID"""
-    if not tax_id or len(tax_id) != 13:
-        return False
-    return tax_id.isdigit()
+    return bool(tax_id) and len(tax_id) == 13 and tax_id.isdigit()
+
 
 def validate_date(date_str: str) -> bool:
     """Validate YYYYMMDD format"""
     if not date_str or len(date_str) != 8:
         return False
     try:
-        datetime.strptime(date_str, '%Y%m%d')
+        datetime.strptime(date_str, "%Y%m%d")
         return True
-    except:
+    except Exception:
         return False
 
+
 def compute_wht_from_rate(subtotal: str, rate_str: str) -> str:
-    """Calculate WHT amount from subtotal and rate"""
+    """Calculate WHT amount from subtotal and rate (round 2 decimals)"""
     if not subtotal or not rate_str:
         return ""
-    
     try:
-        amount = Decimal(subtotal)
-        rate = rate_str.replace('%', '').strip()
-        rate_decimal = Decimal(rate)
-        
-        if rate_decimal > 1:
-            rate_decimal = rate_decimal / 100
-        
-        wht = amount * rate_decimal
+        amount = Decimal(str(subtotal))
+        rate = str(rate_str).replace("%", "").strip()
+        r = Decimal(rate)
+        if r > 1:
+            r = r / 100
+        wht = (amount * r)
         return f"{wht:.2f}"
-    except:
+    except Exception:
         return ""
+
 
 def format_peak_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """Final formatting and validation for PEAK import"""
     formatted = base_row_dict()
     formatted.update(row)
-    
-    # Format numbers
-    for key in ['N_unit_price', 'R_paid_amount']:
-        if formatted[key] and formatted[key] != '0':
+
+    # Normalize numeric fields (always 2 decimals)
+    for key in ["N_unit_price", "R_paid_amount"]:
+        val = formatted.get(key, "")
+        if val in (None, "", "0", 0):
+            formatted[key] = "0"
+            continue
+        try:
+            d = Decimal(str(val).replace(",", ""))
+            formatted[key] = f"{d:.2f}"
+        except Exception:
+            formatted[key] = "0"
+
+    # WHT: allow either amount or "3%" style (compute from subtotal)
+    w = formatted.get("P_wht", "")
+    if w in (None, "", "0", 0):
+        formatted["P_wht"] = "0"
+    else:
+        if "%" in str(w) and formatted.get("N_unit_price", "0") != "0":
+            computed = compute_wht_from_rate(formatted["N_unit_price"], str(w))
+            formatted["P_wht"] = computed if computed else "0"
+        else:
             try:
-                val = Decimal(str(formatted[key]).replace(',', ''))
-                formatted[key] = f"{val:.2f}"
-            except:
-                formatted[key] = '0'
-    
-    # Format WHT
-    if formatted['P_wht'] and formatted['P_wht'] != '0':
-        wht = formatted['P_wht']
-        if '%' in str(wht) and formatted['N_unit_price'] != '0':
-            formatted['P_wht'] = compute_wht_from_rate(
-                formatted['N_unit_price'], 
-                str(wht)
-            )
-    
-    # Set PND for WHT
-    if formatted['P_wht'] and formatted['P_wht'] != '0' and not formatted['S_pnd']:
-        formatted['S_pnd'] = '53'
-    
+                d = Decimal(str(w).replace(",", ""))
+                formatted["P_wht"] = f"{d:.2f}"
+            except Exception:
+                formatted["P_wht"] = "0"
+
+    # PND
+    if formatted["P_wht"] != "0" and not formatted.get("S_pnd"):
+        formatted["S_pnd"] = "53"
+
     # Validate dates
-    for date_field in ['B_doc_date', 'H_invoice_date', 'I_tax_purchase_date']:
-        if formatted[date_field] and not validate_date(formatted[date_field]):
-            formatted[date_field] = ''
-    
-    # Sync G and C if empty
-    if not formatted['C_reference'] and formatted['G_invoice_no']:
-        formatted['C_reference'] = formatted['G_invoice_no']
-    if not formatted['G_invoice_no'] and formatted['C_reference']:
-        formatted['G_invoice_no'] = formatted['C_reference']
-    
+    for k in ["B_doc_date", "H_invoice_date", "I_tax_purchase_date"]:
+        if formatted.get(k) and not validate_date(formatted[k]):
+            formatted[k] = ""
+
+    # Sync C/G
+    if not formatted.get("C_reference") and formatted.get("G_invoice_no"):
+        formatted["C_reference"] = formatted["G_invoice_no"]
+    if not formatted.get("G_invoice_no") and formatted.get("C_reference"):
+        formatted["G_invoice_no"] = formatted["C_reference"]
+
+    # Branch safety
+    formatted["F_branch_5"] = fmt_branch_5(formatted.get("F_branch_5", "00000"))
+
+    # Tax safety
+    if formatted.get("E_tax_id_13") and not validate_tax_id(formatted["E_tax_id_13"]):
+        formatted["E_tax_id_13"] = ""
+
     return formatted
+
 
 # ============================================================
 # Backward Compatibility Functions (for generic.py)
 # ============================================================
 
 def find_tax_id(text: str) -> str:
-    """
-    Backward compatibility wrapper for find_vendor_tax_id
-    Used by generic.py extractor
-    """
-    # Try to find any 13-digit tax ID
+    """Backward compatibility wrapper for generic.py"""
     t = normalize_text(text)
     m = RE_TAX13_STRICT.search(t)
-    if m:
-        return m.group(1)
-    return ""
+    return m.group(1) if m else ""
+
 
 def find_first_date(text: str) -> str:
-    """
-    Backward compatibility wrapper for find_best_date
-    Used by generic.py extractor
-    """
+    """Backward compatibility wrapper"""
     return find_best_date(text)
 
+
 def find_total_amount(text: str) -> str:
-    """
-    Extract total amount from text
-    Used by generic.py extractor
-    """
+    """Extract total amount from text (legacy helper)"""
     t = normalize_text(text)
-    
-    # Try total including VAT first
+
     m = RE_TOTAL_INC_VAT.search(t)
     if m:
-        return parse_money(m.group(1))
-    
-    # Try total excluding VAT
+        x = parse_money(m.group(1))
+        if x and x != "0.00":
+            return x
+
     m = RE_TOTAL_EX_VAT.search(t)
     if m:
-        return parse_money(m.group(1))
-    
-    # Generic amount pattern
+        x = parse_money(m.group(1))
+        if x and x != "0.00":
+            return x
+
     patterns = [
-        r'(?:Total|รวม|Grand\s*Total|Amount\s*Due|จำนวนเงิน)\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
-        r'฿\s*([0-9,]+\.[0-9]{2})',
+        r"(?:Total|รวม|Grand\s*Total|Amount\s*Due|จำนวนเงิน)\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+        r"฿\s*([0-9,]+\.[0-9]{2})",
     ]
-    
-    for pattern in patterns:
-        m = re.search(pattern, t, re.IGNORECASE)
+    for pat in patterns:
+        m = re.search(pat, t, re.IGNORECASE)
         if m:
-            amount = parse_money(m.group(1))
-            if amount and amount != '0.00':
-                return amount
-    
+            x = parse_money(m.group(1))
+            if x and x != "0.00":
+                return x
+
     return ""
+
 
 # ============================================================
 # Export all functions
@@ -772,36 +985,37 @@ def find_total_amount(text: str) -> str:
 
 __all__ = [
     # Normalization
-    'normalize_text',
-    'fmt_tax_13',
-    'fmt_branch_5',
-    'parse_date_to_yyyymmdd',
-    'parse_en_date',
-    'parse_money',
-    
+    "normalize_text",
+    "normalize_one_line",
+    "fmt_tax_13",
+    "fmt_branch_5",
+    "parse_date_to_yyyymmdd",
+    "parse_en_date",
+    "parse_money",
+
     # Row template
-    'base_row_dict',
-    
+    "base_row_dict",
+
     # Detection
-    'detect_platform_vendor',
-    
+    "detect_platform_vendor",
+
     # Extraction
-    'find_vendor_tax_id',
-    'find_branch',
-    'find_invoice_no',
-    'find_best_date',
-    'extract_seller_info',
-    'extract_amounts',
-    'find_payment_method',
-    
+    "find_vendor_tax_id",
+    "find_branch",
+    "find_invoice_no",
+    "find_best_date",
+    "extract_seller_info",
+    "extract_amounts",
+    "find_payment_method",
+
     # Validation
-    'validate_tax_id',
-    'validate_date',
-    'compute_wht_from_rate',
-    'format_peak_row',
-    
+    "validate_tax_id",
+    "validate_date",
+    "compute_wht_from_rate",
+    "format_peak_row",
+
     # Backward compatibility
-    'find_tax_id',
-    'find_first_date',
-    'find_total_amount',
+    "find_tax_id",
+    "find_first_date",
+    "find_total_amount",
 ]

@@ -1,423 +1,446 @@
-# backend/app/extractors/spx.py
 """
-SPX Express extractor - PEAK A-U format (Enhanced v3.0)
-Supports: Shipping fee receipts with 1% WHT
-Enhanced with:
-  - Vendor code mapping (Rabbit/SHD/TopOne)
-  - Full reference number (RCSPXSPB00-00000-25 1218-0001593)
-  - Clean descriptions (Shipping Expense)
-  - Structured notes (no errors)
+SPX Express extractor - PEAK A-U format (Enhanced v3.2 FIX AMOUNTS)
+Fix goals (per your requirements):
+  ✅ Avoid wrong amount root cause: NEVER put WHT amount into N_unit_price / R_paid_amount
+  ✅ Separate amounts clearly:
+      - total_ex_vat
+      - vat_amount
+      - total_inc_vat   (PRIMARY)
+      - wht_amount_3pct
+  ✅ Mapping must be:
+      row["N_unit_price"]  = total_inc_vat
+      row["R_paid_amount"] = total_inc_vat
+      row["O_vat_rate"]    = "7%"
+      row["P_wht"]         = "3%"
+  ✅ Use Total Included VAT as the main total when available
+  ✅ Clean notes (blank)
+  ✅ Safe: never crash extraction, keep output stable
 """
+
 from __future__ import annotations
 
 import re
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 
 from .common import (
     base_row_dict,
     normalize_text,
     find_vendor_tax_id,
     find_branch,
-    find_invoice_no,
     find_best_date,
     extract_seller_info,
     extract_amounts,
-    find_payment_method,
     format_peak_row,
     parse_money,
 )
 
 # ========================================
-# Import vendor mapping (with fallback)
+# Import vendor mapping (optional)
 # ========================================
 try:
     from .vendor_mapping import (
         get_vendor_code,
-        get_expense_category,
         VENDOR_SPX,
     )
     VENDOR_MAPPING_AVAILABLE = True
-except ImportError:
+except Exception:
     VENDOR_MAPPING_AVAILABLE = False
-    VENDOR_SPX = "0105561164871"  # SPX default Tax ID
+    VENDOR_SPX = "0105561164871"  # SPX Express (Thailand) Co., Ltd. Tax ID
+
 
 # ============================================================
-# SPX-specific patterns (enhanced)
+# SPX-specific patterns
 # ============================================================
 
-# Receipt number patterns (with FULL reference support)
-# Example: "RCSPXSPB00-00000-25\n1218-0001593"
+# Receipt number patterns (doc no)
 RE_SPX_RECEIPT_NO = re.compile(
-    r'(?:เลขที่|No\.?)\s*[:#：]?\s*(RCS[A-Z0-9\-/]+)',
-    re.IGNORECASE
+    r"(?:เลขที่|No\.?)\s*[:#：]?\s*(RCS[A-Z0-9\-/]+)",
+    re.IGNORECASE,
 )
 
-# CRITICAL: Full reference pattern
-# Format: RCSPXSPB00-00000-25 1218-0001593
+# Reference code alone (MMDD-XXXXXXX) — allow spaces around dash
+RE_SPX_REF_CODE_FLEX = re.compile(r"\b(\d{4})\s*-\s*(\d{7})\b")
+
+# Full reference pattern (doc + ref) — allow whitespace/newlines between
 RE_SPX_FULL_REFERENCE = re.compile(
-    r'\b(RCS[A-Z0-9\-/]{10,})\s+(\d{4}-\d{7})\b',
-    re.IGNORECASE
-)
-
-# Reference code alone (MMDD-NNNNNNN)
-RE_SPX_REFERENCE_CODE = re.compile(
-    r'\b(\d{4}-\d{7})\b'
+    r"\b(RCS[A-Z0-9\-/]{10,})\s+(\d{4})\s*-\s*(\d{7})\b",
+    re.IGNORECASE,
 )
 
 # Seller information
-RE_SPX_SELLER_ID = re.compile(
-    r'Seller\s*ID\s*[:#：]?\s*(\d{8,12})',
-    re.IGNORECASE
-)
+RE_SPX_SELLER_ID = re.compile(r"Seller\s*ID\s*[:#：]?\s*(\d{8,12})", re.IGNORECASE)
+RE_SPX_USERNAME  = re.compile(r"Username\s*[:#：]?\s*([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-RE_SPX_USERNAME = re.compile(
-    r'Username\s*[:#：]?\s*([A-Za-z0-9_\-]+)',
-    re.IGNORECASE
-)
-
-# Shipping fee (table format)
-# Example: "1 Shipping fee 1 1,330.00 1,330.00"
+# Shipping fee row (table-like)  (kept as optional detail; NOT used as final totals)
 RE_SPX_SHIPPING_FEE = re.compile(
-    r'Shipping\s*fee\s+\d+\s+([0-9,]+\.?[0-9]*)\s+([0-9,]+\.?[0-9]*)',
-    re.IGNORECASE
+    r"Shipping\s*fee\s+\d+\s+([0-9,]+(?:\.[0-9]{1,2})?)\s+([0-9,]+(?:\.[0-9]{1,2})?)",
+    re.IGNORECASE,
 )
 
-# Total amount
+# ---- Totals (VAT separated) ----
+# Primary target: Total (including VAT)
+RE_TOTAL_INC_VAT = re.compile(
+    r"(?:รวม\s*ทั้ง\s*สิ้น|จำนวนเงินรวม\s*\(รวม\s*ภาษี|จำนวนเงินรวม\s*รวม\s*VAT|Total\s*(?:amount)?\s*\(?(?:including|incl\.?)\s*VAT\)?|Grand\s*Total)\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+    re.IGNORECASE,
+)
+
+# Total excluding VAT
+RE_TOTAL_EX_VAT = re.compile(
+    r"(?:ก่อน\s*ภาษี|ยอดรวม\s*\(ไม่รวม\s*ภาษี|ยอดรวม\s*ไม่รวม\s*VAT|Subtotal\s*\(?(?:excluding|excl\.?)\s*VAT\)?|Total\s*excluding\s*VAT)\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+    re.IGNORECASE,
+)
+
+# VAT amount
+RE_VAT_AMOUNT = re.compile(
+    r"(?:ภาษีมูลค่าเพิ่ม|VAT)\s*(?:7\s*%|7%|@?\s*7%)?\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+    re.IGNORECASE,
+)
+
+# Fallback total amount keyword (not ideal, but ok if no inc-vat line exists)
 RE_SPX_TOTAL_AMOUNT = re.compile(
-    r'(?:จำนวนเงินรวม|Total\s*amount)\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
-    re.IGNORECASE
+    r"(?:จำนวนเงินรวม|Total\s*amount)\s*[:#：]?\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+    re.IGNORECASE,
 )
 
-# WHT patterns (1% for SPX)
+# ---- WHT patterns (3% per your requirement) ----
+# Thai: "...อัตราร้อยละ 3 % เป็นจำนวนเงิน 1,234.56"
 RE_SPX_WHT_TH = re.compile(
-    r'หักภาษีเงินได้\s*ณ\s*ที่จ่าย(?:ใน)?อัตรา(?:ร้อย)?ละ\s*(\d+)\s*%\s*เป็นจำนวนเงิน\s*([0-9,.]+)',
-    re.IGNORECASE
+    r"หักภาษีเงินได้\s*ณ\s*ที่จ่าย(?:ใน)?อัตรา(?:ร้อย)?ละ\s*(\d+)\s*%\s*เป็นจำนวนเงิน\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+    re.IGNORECASE,
 )
 
+# EN: "deducted 3% withholding tax ... at 1,234.56 THB"
 RE_SPX_WHT_EN = re.compile(
-    r'deducted\s+(\d+)%\s+withholding\s+tax.*?at\s+([0-9,.]+)\s+THB',
-    re.IGNORECASE
+    r"deducted\s+(\d+)\s*%\s+withholding\s+tax.*?\bat\s+([0-9,]+(?:\.[0-9]{1,2})?)\s+THB\b",
+    re.IGNORECASE | re.DOTALL,
 )
 
+# Prevent picking WHT line as totals (heuristic)
+RE_WHT_HINT = re.compile(r"(withholding\s+tax|หักภาษี|ณ\s*ที่จ่าย|wht)", re.IGNORECASE)
+
+
 # ============================================================
-# Helper functions
+# Helpers
 # ============================================================
+
+def _clean_ref_code(mmdd: str, seq7: str) -> str:
+    return f"{mmdd}-{seq7}"
+
+
+def _extract_ref_code_anywhere(t: str) -> str:
+    m = RE_SPX_REF_CODE_FLEX.search(t)
+    if not m:
+        return ""
+    return _clean_ref_code(m.group(1), m.group(2))
+
+
+def _vendor_code_fallback_for_spx(client_tax_id: str) -> str:
+    """
+    Hard fallback mapping for SPX (per your latest rule)
+    """
+    cid = (client_tax_id or "").strip()
+    if cid == "0105565027615":  # TopOne
+        return "C00038"
+    if cid == "0105563022918":  # SHD
+        return "C01133"
+    if cid == "0105561071873":  # Rabbit
+        return "C00563"
+    return "SPX"
+
+
+def _get_vendor_code_safe(client_tax_id: str, vendor_tax_id: str) -> str:
+    """
+    Prefer vendor_mapping.get_vendor_code if available; otherwise use hard fallback.
+    Must never raise.
+    """
+    if VENDOR_MAPPING_AVAILABLE and client_tax_id:
+        try:
+            return get_vendor_code(
+                client_tax_id=client_tax_id,
+                vendor_tax_id=vendor_tax_id,
+                vendor_name="SPX",
+            )
+        except Exception:
+            return _vendor_code_fallback_for_spx(client_tax_id)
+    return _vendor_code_fallback_for_spx(client_tax_id)
+
 
 def extract_spx_seller_info(text: str) -> Tuple[str, str]:
-    """
-    Extract SPX seller ID and username
-    
-    Returns:
-        (seller_id, username)
-        
-    Example:
-        seller_id = "253227155"
-        username = "70maiofficialstore1"
-    """
     t = normalize_text(text)
     seller_id = ""
     username = ""
-    
-    # Try SPX-specific patterns
+
     m = RE_SPX_SELLER_ID.search(t)
     if m:
         seller_id = m.group(1)
-    
+
     m = RE_SPX_USERNAME.search(t)
     if m:
         username = m.group(1)
-    
-    # Fallback to generic extraction
+
     if not seller_id or not username:
         seller_info = extract_seller_info(t)
-        seller_id = seller_id or seller_info['seller_id']
-        username = username or seller_info['username']
-    
-    return (seller_id, username)
+        seller_id = seller_id or (seller_info.get("seller_id") or "")
+        username = username or (seller_info.get("username") or "")
+
+    return seller_id, username
 
 
-def extract_spx_full_reference(text: str) -> str:
+def extract_spx_full_reference(text: str, filename: str = "") -> str:
     """
-    Extract full SPX reference number
-    
-    CRITICAL: Must capture BOTH document number AND reference code
-    
-    Examples:
-        Input:  "No. RCSPXSPB00-00000-25\n1218-0001593"
-        Output: "RCSPXSPB00-00000-25 1218-0001593"
-        
-        Input:  "Receipt: RCSPXSPB00-00000-25 1218-0001593"
-        Output: "RCSPXSPB00-00000-25 1218-0001593"
-    
-    Returns:
-        Full reference or document number only if reference not found
+    ✅ Force Full Reference = DOCNO + MMDD-XXXXXXX
+    Priority:
+      1) Full reference in text (doc + ref across whitespace/newlines)
+      2) doc in text + ref anywhere in text
+      3) full reference in filename
+      4) doc in filename + ref in filename
+      5) doc only (if ref missing)
+      6) ""
     """
-    t = normalize_text(text)
-    
-    # Try full reference pattern first (MOST IMPORTANT!)
+    t = normalize_text(text or "")
+    fn = normalize_text(filename or "")
+
+    # 1) Full reference in text
     m = RE_SPX_FULL_REFERENCE.search(t)
     if m:
-        return f"{m.group(1)} {m.group(2)}"
-    
-    # Try to find document and reference separately
-    doc_no = ""
-    ref_code = ""
-    
-    # Find document number
-    m = RE_SPX_RECEIPT_NO.search(t)
+        doc = m.group(1)
+        ref = _clean_ref_code(m.group(2), m.group(3))
+        return f"{doc} {ref}"
+
+    # 2) doc + ref anywhere in text
+    doc = ""
+    m_doc = RE_SPX_RECEIPT_NO.search(t)
+    if m_doc:
+        doc = m_doc.group(1)
+
+    if doc:
+        ref = _extract_ref_code_anywhere(t)
+        if ref:
+            return f"{doc} {ref}"
+        return doc
+
+    # 3) Full reference in filename
+    m = RE_SPX_FULL_REFERENCE.search(fn)
     if m:
-        doc_no = m.group(1)
-    
-    # Find reference code near document number
-    if doc_no:
-        # Look for reference code within 100 characters after doc_no
-        doc_pos = t.find(doc_no)
-        if doc_pos != -1:
-            nearby_text = t[doc_pos:doc_pos+100]
-            m = RE_SPX_REFERENCE_CODE.search(nearby_text)
-            if m:
-                ref_code = m.group(1)
-    
-    # Return combined or just document number
-    if doc_no and ref_code:
-        return f"{doc_no} {ref_code}"
-    elif doc_no:
-        return doc_no
-    
-    # Final fallback to enhanced common.py
-    return find_invoice_no(t, 'SPX')
+        doc = m.group(1)
+        ref = _clean_ref_code(m.group(2), m.group(3))
+        return f"{doc} {ref}"
+
+    # 4) doc + ref in filename
+    m_doc = RE_SPX_RECEIPT_NO.search(fn)
+    if m_doc:
+        doc = m_doc.group(1)
+        ref = _extract_ref_code_anywhere(fn)
+        if ref:
+            return f"{doc} {ref}"
+        return doc
+
+    return ""
 
 
-# ============================================================
-# Main extraction function
-# ============================================================
-
-def extract_spx(text: str, client_tax_id: str = "") -> Dict[str, Any]:
+def _extract_amounts_spx_strict(t: str) -> Tuple[str, str, str, str]:
     """
-    Extract SPX Express receipt/invoice (Enhanced v3.0)
-    
-    SPX Express is a shipping service provider
-    Documents are typically shipping fee receipts with 1% WHT
-    
-    Args:
-        text: PDF text content
-        client_tax_id: Client's Tax ID for vendor code mapping
-                      (Rabbit/SHD/TopOne)
-    
-    Returns:
-        PEAK A-U formatted dict with:
-        - D: Vendor code (C00563 for Rabbit, C01133 for SHD, C00038 for TopOne)
-        - C/G: Full reference (RCSPXSPB00-00000-25 1218-0001593)
-        - L: Short description (Shipping Expense)
-        - T: Clean notes (no AI errors)
+    Return (total_ex_vat, vat_amount, total_inc_vat, wht_amount_3pct)
+    - Prefer explicit Inc VAT line as PRIMARY
+    - Never let WHT amount override totals
     """
-    t = normalize_text(text)
-    row = base_row_dict()
-    
-    # ========================================
-    # STEP 1: Vendor identification & code mapping
-    # ========================================
-    
-    # Get SPX Tax ID (vendor)
-    vendor_tax = find_vendor_tax_id(t, 'SPX')
-    if vendor_tax:
-        row['E_tax_id_13'] = vendor_tax
-    else:
-        row['E_tax_id_13'] = VENDOR_SPX
-    
-    # Get vendor code (CLIENT-AWARE)
-    if VENDOR_MAPPING_AVAILABLE and client_tax_id:
-        vendor_code = get_vendor_code(
-            client_tax_id=client_tax_id,
-            vendor_tax_id=row['E_tax_id_13'],
-            vendor_name="SPX"
-        )
-        row['D_vendor_code'] = vendor_code  # e.g., C00563 for Rabbit
-    else:
-        row['D_vendor_code'] = 'SPX'  # Fallback
-    
-    # Branch (usually Head Office)
-    branch = find_branch(t)
-    if branch:
-        row['F_branch_5'] = branch
-    else:
-        row['F_branch_5'] = '00000'
-    
-    # ========================================
-    # STEP 2: Document number (ENHANCED - with full reference!)
-    # ========================================
-    
-    # CRITICAL: Get full reference with code
-    full_reference = extract_spx_full_reference(t)
-    
-    if full_reference:
-        row['G_invoice_no'] = full_reference
-        row['C_reference'] = full_reference
-    
-    # ========================================
-    # STEP 3: Date
-    # ========================================
-    
-    date = find_best_date(t)
-    if date:
-        row['B_doc_date'] = date
-        row['H_invoice_date'] = date
-        row['I_tax_purchase_date'] = date
-    
-    # ========================================
-    # STEP 4: Seller/Shop Information (ENHANCED)
-    # ========================================
-    
-    seller_id, username = extract_spx_seller_info(t)
-    
-    # ========================================
-    # STEP 5: Amounts (Shipping Fee)
-    # ========================================
-    
-    # Try SPX-specific pattern first
-    m = RE_SPX_SHIPPING_FEE.search(t)
-    if m:
-        unit_price = parse_money(m.group(1))
-        amount = parse_money(m.group(2))
-        if unit_price:
-            row['N_unit_price'] = unit_price
-        if amount:
-            row['R_paid_amount'] = amount
-    
-    # Try total amount
-    if not row['R_paid_amount'] or row['R_paid_amount'] == '0':
-        m = RE_SPX_TOTAL_AMOUNT.search(t)
-        if m:
-            total = parse_money(m.group(1))
-            if total:
-                row['R_paid_amount'] = total
-                if not row['N_unit_price'] or row['N_unit_price'] == '0':
-                    row['N_unit_price'] = total
-    
-    # Fallback to generic extraction
-    if not row['N_unit_price'] or row['N_unit_price'] == '0':
-        amounts = extract_amounts(t)
-        if amounts['subtotal']:
-            row['N_unit_price'] = amounts['subtotal']
-        elif amounts['total']:
-            row['N_unit_price'] = amounts['total']
-        
-        if amounts['total']:
-            row['R_paid_amount'] = amounts['total']
-    
-    # ========================================
-    # STEP 6: WHT (Withholding Tax - usually 1% for SPX)
-    # ========================================
-    
-    wht_rate = ''
-    wht_amount = ''
-    
-    # Try Thai pattern
+    total_ex_vat = ""
+    vat_amount = ""
+    total_inc_vat = ""
+    wht_amount = ""
+
+    # --- WHT first (but never used for totals) ---
     m = RE_SPX_WHT_TH.search(t)
     if m:
-        wht_rate = f"{m.group(1)}%"
-        wht_amount = parse_money(m.group(2))
-    
-    # Try English pattern
+        rate = (m.group(1) or "").strip()
+        amt = parse_money(m.group(2))
+        if rate == "3" and amt:
+            wht_amount = amt
+
     if not wht_amount:
         m = RE_SPX_WHT_EN.search(t)
         if m:
-            wht_rate = f"{m.group(1)}%"
-            wht_amount = parse_money(m.group(2))
-    
-    # Fallback to generic extraction
-    if not wht_amount:
-        amounts = extract_amounts(t)
-        if amounts['wht_amount']:
-            wht_amount = amounts['wht_amount']
-        if amounts['wht_rate']:
-            wht_rate = amounts['wht_rate']
+            rate = (m.group(1) or "").strip()
+            amt = parse_money(m.group(2))
+            if rate == "3" and amt:
+                wht_amount = amt
+
+    # --- Totals ---
+    m = RE_TOTAL_INC_VAT.search(t)
+    if m and not RE_WHT_HINT.search(t[max(0, m.start()-40):m.end()+40]):
+        total_inc_vat = parse_money(m.group(1)) or ""
+
+    m = RE_TOTAL_EX_VAT.search(t)
+    if m and not RE_WHT_HINT.search(t[max(0, m.start()-40):m.end()+40]):
+        total_ex_vat = parse_money(m.group(1)) or ""
+
+    # VAT amount line
+    # NOTE: there may be multiple VAT occurrences; take the first plausible
+    m = RE_VAT_AMOUNT.search(t)
+    if m and not RE_WHT_HINT.search(t[max(0, m.start()-40):m.end()+40]):
+        vat_amount = parse_money(m.group(1)) or ""
+
+    # If no explicit total_inc_vat, try fallback "Total amount" (but still avoid WHT vicinity)
+    if not total_inc_vat:
+        m = RE_SPX_TOTAL_AMOUNT.search(t)
+        if m and not RE_WHT_HINT.search(t[max(0, m.start()-60):m.end()+60]):
+            total_inc_vat = parse_money(m.group(1)) or ""
+
+    # If still missing inc-vat, derive if possible
+    if not total_inc_vat and total_ex_vat and vat_amount:
+        try:
+            # parse_money returns formatted string; do float best-effort
+            total_inc_vat = f"{(float(total_ex_vat) + float(vat_amount)):.2f}"
+        except Exception:
+            pass
+
+    # If missing ex-vat but have inc-vat + vat
+    if not total_ex_vat and total_inc_vat and vat_amount:
+        try:
+            total_ex_vat = f"{(float(total_inc_vat) - float(vat_amount)):.2f}"
+        except Exception:
+            pass
+
+    # Last resort: use common.extract_amounts but guard against WHT pollution
+    if not total_inc_vat:
+        am = extract_amounts(t) or {}
+        # extract_amounts might be noisy; still use its 'total' only if it looks like a total
+        cand_total = am.get("total") or ""
+        cand_vat = am.get("vat") or ""
+        cand_sub = am.get("subtotal") or ""
+        if cand_total:
+            total_inc_vat = cand_total
+        if cand_vat and not vat_amount:
+            vat_amount = cand_vat
+        if cand_sub and not total_ex_vat:
+            total_ex_vat = cand_sub
+
+    return (total_ex_vat, vat_amount, total_inc_vat, wht_amount)
+
+
+# ============================================================
+# Main extraction
+# ============================================================
+
+def extract_spx(text: str, client_tax_id: str = "", filename: str = "") -> Dict[str, Any]:
+    """
+    Extract SPX receipt to PEAK A-U format.
+    Safe: must never crash; keep output stable.
+    """
+    try:
+        t = normalize_text(text or "")
+        row = base_row_dict()
+
+        # ========================================
+        # 1) Vendor tax id (platform) + vendor code (Cxxxxx)
+        # ========================================
+        vendor_tax = find_vendor_tax_id(t, "SPX") or VENDOR_SPX
+        row["E_tax_id_13"] = vendor_tax
+        row["D_vendor_code"] = _get_vendor_code_safe(client_tax_id, vendor_tax)
+
+        # Branch (Head Office mostly)
+        row["F_branch_5"] = find_branch(t) or "00000"
+
+        # ========================================
+        # 2) Full reference (FORCED)
+        # ========================================
+        full_ref = extract_spx_full_reference(t, filename=filename)
+        if full_ref:
+            row["G_invoice_no"] = full_ref
+            row["C_reference"] = full_ref
+
+        # ========================================
+        # 3) Dates (fill all 3)
+        # ========================================
+        date = find_best_date(t) or ""
+        if date:
+            row["B_doc_date"] = date
+            row["H_invoice_date"] = date
+            row["I_tax_purchase_date"] = date
+
+        # ========================================
+        # 4) Amounts (STRICT separation)
+        # ========================================
+        row["M_qty"] = "1"
+
+        total_ex_vat, vat_amount, total_inc_vat, wht_amount_3pct = _extract_amounts_spx_strict(t)
+
+        # ✅ Primary total = total_inc_vat only
+        if total_inc_vat:
+            row["N_unit_price"] = total_inc_vat
+            row["R_paid_amount"] = total_inc_vat
         else:
-            wht_rate = '1%'  # Default for SPX
-    
-    if wht_amount:
-        row['P_wht'] = wht_amount
-        row['S_pnd'] = '53'
-    
-    # ========================================
-    # STEP 7: VAT (usually NO VAT for shipping)
-    # ========================================
-    
-    amounts = extract_amounts(t)
-    if amounts['vat']:
-        row['O_vat_rate'] = '7%'
-        row['J_price_type'] = '1'
-    else:
-        row['O_vat_rate'] = 'NO'
-        row['J_price_type'] = '3'
-    
-    # ========================================
-    # STEP 8: Description (SHORT & CLEAN)
-    # ========================================
-    
-    if VENDOR_MAPPING_AVAILABLE:
-        # Use simple category
-        row['L_description'] = "Shipping Expense"
-        row['U_group'] = "Shipping Expense"
-    else:
-        # Build description
-        desc_parts = ['SPX Express - Shipping Fee']
-        
-        if seller_id:
-            desc_parts.append(f"Seller ID: {seller_id}")
-        
-        if username:
-            desc_parts.append(f"Shop: {username}")
-        
-        if wht_rate:
-            desc_parts.append(f"WHT {wht_rate}: {wht_amount}")
-        
-        row['L_description'] = ' | '.join(desc_parts)
-        row['U_group'] = 'Shipping Expense'
-    
-    # ========================================
-    # STEP 9: Notes (CLEAN & STRUCTURED)
-    # ========================================
-    
-    note_parts = []
-    
-    # Seller information
-    if seller_id:
-        note_parts.append(f"Seller ID: {seller_id}")
-    if username:
-        note_parts.append(f"Username: {username}")
-    
-    # Financial summary
-    if row['N_unit_price'] and row['N_unit_price'] != '0':
-        note_parts.append(f"\nShipping Fee: ฿{row['N_unit_price']}")
-    
-    # WHT
-    if wht_rate and wht_amount:
-        note_parts.append(f"Withholding Tax {wht_rate}: ฿{wht_amount}")
-    
-    # ❌ NO AI ERRORS - Keep clean!
-    row['T_note'] = '\n'.join(note_parts) if note_parts else ""
-    
-    # ========================================
-    # STEP 10: Final settings
-    # ========================================
-    
-    # Payment Method
-    row['Q_payment_method'] = 'หักจากยอดขาย'
-    
-    # Other Fields
-    row['M_qty'] = '1'
-    row['K_account'] = ''
-    
-    return format_peak_row(row)
+            # very last fallback: shipping fee amount (still NOT WHT)
+            m = RE_SPX_SHIPPING_FEE.search(t)
+            if m:
+                amount = parse_money(m.group(2))
+                if amount:
+                    row["N_unit_price"] = amount
+                    row["R_paid_amount"] = amount
 
+        # ========================================
+        # 5) VAT/WHT mapping (per your strict rule)
+        # ========================================
+        row["J_price_type"] = "1"
+        row["O_vat_rate"] = "7%"
 
-# ============================================================
-# Export
-# ============================================================
+        # ✅ P_wht is RATE only (3%) per requirement
+        # If no WHT evidence found, keep 0 (safer). If you want always 3% then force it here.
+        row["P_wht"] = "3%" if wht_amount_3pct else "0"
+        if wht_amount_3pct:
+            row["S_pnd"] = "53"
+
+        # ========================================
+        # 6) Payment method (keep your convention)
+        # ========================================
+        row["Q_payment_method"] = "หักจากยอดขาย"
+
+        # ========================================
+        # 7) Description + Group (keep stable + allowed)
+        # ========================================
+        row["L_description"] = "Marketplace Expense"
+        row["U_group"] = "Marketplace Expense"
+
+        # ========================================
+        # 8) Notes must be blank
+        # ========================================
+        row["T_note"] = ""
+
+        # ========================================
+        # 9) Safety sync C/G
+        # ========================================
+        if not row.get("C_reference") and row.get("G_invoice_no"):
+            row["C_reference"] = row["G_invoice_no"]
+        if not row.get("G_invoice_no") and row.get("C_reference"):
+            row["G_invoice_no"] = row["C_reference"]
+
+        row["K_account"] = ""
+
+        # IMPORTANT: we do NOT output these internal numbers into PEAK columns
+        # (they are here for debugging if you later choose to expose metadata)
+        # total_ex_vat, vat_amount, total_inc_vat, wht_amount_3pct
+
+        return format_peak_row(row)
+
+    except Exception:
+        # Fail-safe: stable output, never crash
+        row = base_row_dict()
+        row["D_vendor_code"] = _vendor_code_fallback_for_spx(client_tax_id)
+        row["F_branch_5"] = "00000"
+        row["M_qty"] = "1"
+        row["J_price_type"] = "1"
+        row["O_vat_rate"] = "7%"
+        row["P_wht"] = "0"
+        row["R_paid_amount"] = "0"
+        row["N_unit_price"] = "0"
+        row["U_group"] = "Marketplace Expense"
+        row["L_description"] = "Marketplace Expense"
+        row["T_note"] = ""
+        return format_peak_row(row)
+
 
 __all__ = [
-    'extract_spx',
-    'extract_spx_seller_info',
-    'extract_spx_full_reference',
+    "extract_spx",
+    "extract_spx_full_reference",
+    "extract_spx_seller_info",
 ]

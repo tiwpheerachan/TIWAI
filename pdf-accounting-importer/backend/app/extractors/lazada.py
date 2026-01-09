@@ -1,14 +1,21 @@
-# backend/app/extractors/lazada.py
 """
-Lazada extractor - PEAK A-U format (Enhanced v3.0)
-Supports: Marketplace service fees with 7% VAT and 3% WHT
-Enhanced with:
-  - Vendor code mapping (Rabbit/SHD/TopOne)
-  - Smart seller code detection (TH1JHFZ0EM format)
-  - Clean descriptions (Marketplace Expense)
-  - Structured notes (no errors)
-  - Complete fee breakdown
+Lazada extractor - PEAK A-U format (Enhanced v3.2 FIXED)
+Fix goals (same class of bugs as TikTok/SPX):
+  ✅ NEVER let WHT amount overwrite unit_price / paid_amount
+  ✅ Separate amounts clearly:
+     - total_ex_vat
+     - vat_amount
+     - total_inc_vat  (PRIMARY)
+     - wht_amount_3pct
+  ✅ Mapping (per your strict rule):
+     row["N_unit_price"]  = total_inc_vat
+     row["R_paid_amount"] = total_inc_vat
+     row["O_vat_rate"]    = "7%"
+     row["P_wht"]         = "3%"   (only if WHT exists)
+  ✅ Use "Total (Including Tax)" as primary (from Lazada totals block)
+  ✅ Fallbacks must avoid "wht_amount" being mistaken as totals
 """
+
 from __future__ import annotations
 
 import re
@@ -22,8 +29,8 @@ from .common import (
     find_invoice_no,
     find_best_date,
     parse_date_to_yyyymmdd,
-    extract_amounts,
-    extract_seller_info,
+    extract_amounts,          # fallback only
+    extract_seller_info,      # fallback only
     format_peak_row,
     parse_money,
 )
@@ -34,455 +41,423 @@ from .common import (
 try:
     from .vendor_mapping import (
         get_vendor_code,
-        get_expense_category,
         VENDOR_LAZADA,
+        VENDOR_NAME_MAP,
     )
     VENDOR_MAPPING_AVAILABLE = True
 except ImportError:
     VENDOR_MAPPING_AVAILABLE = False
-    VENDOR_LAZADA = "0105555040244"  # Lazada default Tax ID
+    VENDOR_LAZADA = "0105555040244"  # Lazada Tax ID
+
 
 # ============================================================
-# Lazada-specific patterns (enhanced)
+# Lazada-specific patterns (matched to sample PDF)
 # ============================================================
 
-# Document patterns (THMPTI format is primary)
-RE_LAZADA_DOC_THMPTI = re.compile(
-    r'\b(THMPTI\d{16})\b',
+RE_LAZADA_SELLER_CODE_TH = re.compile(r"\b(TH[A-Z0-9]{8,12})\b")
+RE_LAZADA_DOC_THMPTI = re.compile(r"\b(THMPTI\d{16})\b", re.IGNORECASE)
+
+RE_LAZADA_INVOICE_NO_FIELD = re.compile(
+    r"Invoice\s*No\.?\s*[:#：]?\s*([A-Z0-9\-/]{8,40})",
     re.IGNORECASE
 )
 
-RE_LAZADA_DOC_STRICT = re.compile(
-    r'\b(THMPTI\d{16}|TH[A-Z0-9]{8,12})\b',
-    re.IGNORECASE
-)
-
-RE_LAZADA_INVOICE_NO = re.compile(
-    r'Invoice\s*No\.?\s*[:#：]?\s*([A-Z0-9\-/]{10,})',
-    re.IGNORECASE
-)
-
-# Date patterns
 RE_LAZADA_INVOICE_DATE = re.compile(
-    r'Invoice\s*Date\s*[:#：]?\s*(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
+    r"Invoice\s*Date\s*[:#：]?\s*(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})",
     re.IGNORECASE
 )
 
-# Period extraction (handles both - and –)
 RE_LAZADA_PERIOD = re.compile(
-    r'Period\s*[:#：]?\s*(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})\s*[-–to]+\s*(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})',
+    r"Period\s*[:#：]?\s*(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})\s*[-–]\s*(\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2})",
     re.IGNORECASE
 )
 
-# Seller code patterns (TH1JHFZ0EM format - Lazada specific)
-RE_LAZADA_SELLER_TH_PREFIX = re.compile(
-    r'\b(TH[A-Z0-9]{8,10})\b',
-    re.MULTILINE
-)
+RE_TAX_ID_13 = re.compile(r"\b(\d{13})\b")
 
-RE_LAZADA_SELLER_CODE = re.compile(
-    r'^([A-Z0-9]{8,15})$',
-    re.MULTILINE
-)
-
-# Fee line extraction (table format)
-# Example: "1 Payment Fee 11,270.75"
 RE_LAZADA_FEE_LINE = re.compile(
-    r'^\s*(\d+)\s+(.{10,80}?)\s+([0-9,]+(?:\.[0-9]{1,2})?)\s*$',
+    r"^\s*(\d+)\s+(.{3,120}?)\s+([0-9,]+(?:\.[0-9]{1,2})?)\s*$",
+    re.MULTILINE
+)
+
+# Totals block (STRICT, best source)
+RE_LAZADA_SUBTOTAL_TOTAL = re.compile(
+    r"^\s*Total\s+([0-9,]+\.[0-9]{2})\s*$",
+    re.MULTILINE | re.IGNORECASE
+)
+RE_LAZADA_VAT_7 = re.compile(
+    r"^\s*7%\s*\(VAT\)\s+([0-9,]+\.[0-9]{2})\s*$",
+    re.MULTILINE | re.IGNORECASE
+)
+RE_LAZADA_TOTAL_INC = re.compile(
+    r"^\s*Total\s*\(Including\s*Tax\)\s+([0-9,]+\.[0-9]{2})\s*$",
     re.MULTILINE | re.IGNORECASE
 )
 
-# Fee keywords (what to include)
-RE_LAZADA_FEE_KEYWORDS = re.compile(
-    r'(?:Payment\s*Fee|Commission|Premium\s*Package|LazCoins|Sponsored|Voucher|Marketing|Service|Discovery|Participation)',
-    re.IGNORECASE
-)
-
-# WHT text extraction
 RE_LAZADA_WHT_TEXT = re.compile(
-    r'หักภาษี.*?ที่จ่าย.*?อัตรา.*?(\d+)\s*%.*?จำนวน\s*([0-9,]+(?:\.[0-9]{2})?)',
+    r"หักภาษีณ?\s*ที่จ่าย.*?อัตรา(?:ร้อยละ)?\s*(\d+)\s*%.*?เป็นจำนวน\s*([0-9,]+(?:\.[0-9]{2})?)\s*บาท",
     re.IGNORECASE | re.DOTALL
 )
 
+RE_LAZADA_FEE_KEYWORDS = re.compile(
+    r"(?:Payment\s*Fee|Commission|Premium\s*Package|LazCoins|Sponsored|Voucher|Marketing|Service|Discovery|Participation|Funded)",
+    re.IGNORECASE
+)
+
+
 # ============================================================
-# Helper functions
+# Helpers
 # ============================================================
 
-def extract_seller_code_lazada(text: str) -> str:
-    """
-    Extract Lazada seller code with priority
-    
-    Priority:
-    1. TH-prefixed format (TH1JHFZ0EM) - most specific
-    2. Generic seller info extraction
-    3. Alphanumeric codes (8-15 chars)
-    
-    Returns:
-        Seller code or empty string
-    """
+def _pick_client_tax_id(text: str) -> str:
     t = normalize_text(text)
-    
-    # Priority 1: TH-prefixed seller code
-    m = RE_LAZADA_SELLER_TH_PREFIX.search(t)
-    if m:
-        code = m.group(1)
-        # Exclude invoice numbers
-        if not code.startswith('THMPTI'):
-            return code
-    
-    # Priority 2: Generic seller extraction from common.py
-    seller_info = extract_seller_info(t)
-    if seller_info['seller_code']:
-        return seller_info['seller_code']
-    
-    # Priority 3: Generic alphanumeric code
-    for m in RE_LAZADA_SELLER_CODE.finditer(t):
-        code = m.group(1)
-        # Filter criteria
-        if code.isdigit():  # Skip pure numbers (Tax IDs)
-            continue
-        if code.startswith('THMPTI'):  # Skip invoice numbers
-            continue
-        if code.startswith('010'):  # Skip Tax IDs
-            continue
-        if len(code) >= 8:
-            return code
-    
+    for m in RE_TAX_ID_13.finditer(t):
+        tax = m.group(1)
+        if tax and tax != VENDOR_LAZADA:
+            return tax
     return ""
 
 
-def extract_lazada_fee_summary(text: str, max_items: int = 8) -> Tuple[str, str]:
-    """
-    Extract fee breakdown from Lazada invoice
-    
-    Args:
-        text: PDF text
-        max_items: Maximum fee items to extract
-    
-    Returns:
-        (short_summary, detailed_notes)
-        
-    Example:
-        short = "Lazada Fees: Payment Fee, Commission, Premium Package (+3 more)"
-        notes = "1. Payment Fee: ฿11,270.75\n2. Commission: ฿48,589.55\n..."
-    """
+def extract_seller_code_lazada(text: str) -> str:
     t = normalize_text(text)
-    
-    fee_items = []
-    fee_details = []
-    
+
+    candidates = []
+    for m in RE_LAZADA_SELLER_CODE_TH.finditer(t):
+        code = m.group(1)
+        if not code.upper().startswith("THMPTI"):
+            candidates.append(code)
+    if candidates:
+        return candidates[0]
+
+    info = extract_seller_info(t)
+    if info.get("seller_code"):
+        sc = str(info["seller_code"]).strip()
+        if sc and not sc.upper().startswith("THMPTI"):
+            return sc
+
+    return ""
+
+
+def extract_lazada_fee_summary(text: str, max_items: int = 10) -> Tuple[str, str, List[Dict[str, str]]]:
+    t = normalize_text(text)
+
+    fee_items: List[str] = []
+    fee_details: List[str] = []
+    fee_list: List[Dict[str, str]] = []
+
     for m in RE_LAZADA_FEE_LINE.finditer(t):
-        line_no = m.group(1)
-        fee_desc = m.group(2).strip()
-        amount = m.group(3)
-        
-        # Must contain fee keywords
-        if not RE_LAZADA_FEE_KEYWORDS.search(fee_desc):
+        no = m.group(1)
+        desc = m.group(2).strip()
+        amt_raw = m.group(3)
+
+        desc_l = desc.lower()
+
+        # skip totals-ish
+        if desc_l.startswith("total"):
             continue
-        
-        # Exclude totals/sums
-        if any(kw in fee_desc.lower() for kw in ['total', 'รวม', 'sum', 'grand', 'including', 'vat', 'tax', 'ภาษี']):
+        if "including tax" in desc_l or "vat" in desc_l or "tax" in desc_l or "ภาษี" in desc_l:
             continue
-        
-        # Parse and validate amount
-        parsed_amount = parse_money(amount)
-        if not parsed_amount or parsed_amount == '0.00':
+
+        if not RE_LAZADA_FEE_KEYWORDS.search(desc):
             continue
-        
-        # Clean fee name
-        fee_name = re.sub(r'\s{2,}', ' ', fee_desc)
-        fee_name = fee_name[:60]  # Limit length
-        
-        fee_items.append(fee_name)
-        fee_details.append(f"{line_no}. {fee_name}: ฿{parsed_amount}")
-        
+
+        amt = parse_money(amt_raw)
+        if not amt or amt in ("0", "0.00"):
+            continue
+
+        name = re.sub(r"\s{2,}", " ", desc).strip()
+        if len(name) > 90:
+            name = name[:90].rstrip()
+
+        fee_items.append(name)
+        fee_details.append(f"{no}. {name}: ฿{amt}")
+        fee_list.append({"no": no, "name": name, "amount": amt})
+
         if len(fee_items) >= max_items:
             break
-    
+
     if not fee_items:
-        return ('', '')
-    
-    # Generate short summary
-    short = 'Lazada Fees: ' + ', '.join(fee_items[:3])
+        return ("", "", [])
+
+    short = "Lazada Fees: " + ", ".join(fee_items[:3])
     if len(fee_items) > 3:
-        short += f' (+{len(fee_items)-3} more)'
-    
-    # Generate detailed notes
-    notes = '\n'.join(fee_details)
-    
-    return (short, notes)
+        short += f" (+{len(fee_items) - 3} more)"
+
+    notes = "\n".join(fee_details)
+    return (short, notes, fee_list)
 
 
 def extract_wht_from_text(text: str) -> Tuple[str, str]:
     """
-    Extract WHT from Lazada Thai text
-    
-    Example text:
-    "บริษัท ลาซาด้า จำกัด ได้หักภาษีณ ที่จ่ายในอัตราร้อยละ 3% เป็นจำนวน 3,219.71 บาท"
-    
-    Returns:
-        (rate, amount) e.g. ("3%", "3219.71")
+    Returns (rate, amount) like ("3%", "3219.71")
     """
-    m = RE_LAZADA_WHT_TEXT.search(text)
+    t = normalize_text(text)
+    m = RE_LAZADA_WHT_TEXT.search(t)
+    if not m:
+        return ("", "")
+    rate = f"{m.group(1)}%"
+    amt = parse_money(m.group(2)) or ""
+    return (rate, amt)
+
+
+def extract_totals_block(text: str) -> Tuple[str, str, str]:
+    """
+    Extract (total_ex_vat, vat_amount, total_inc_vat) from totals area.
+    This is the PRIMARY and safest source.
+    """
+    t = normalize_text(text)
+
+    total_ex_vat = ""
+    vat_amount = ""
+    total_inc_vat = ""
+
+    m = RE_LAZADA_SUBTOTAL_TOTAL.search(t)
     if m:
-        rate = f"{m.group(1)}%"
-        amount = parse_money(m.group(2))
-        return (rate, amount)
-    
-    return ('', '')
+        total_ex_vat = parse_money(m.group(1)) or ""
+
+    m = RE_LAZADA_VAT_7.search(t)
+    if m:
+        vat_amount = parse_money(m.group(1)) or ""
+
+    m = RE_LAZADA_TOTAL_INC.search(t)
+    if m:
+        total_inc_vat = parse_money(m.group(1)) or ""
+
+    return (total_ex_vat, vat_amount, total_inc_vat)
+
+
+def _safe_float(x: str) -> float:
+    try:
+        return float(str(x).replace(",", "").strip())
+    except Exception:
+        return 0.0
+
+
+def _derive_total_inc_vat(total_ex_vat: str, vat_amount: str) -> str:
+    if not total_ex_vat or not vat_amount:
+        return ""
+    v = _safe_float(total_ex_vat) + _safe_float(vat_amount)
+    if v <= 0:
+        return ""
+    return f"{v:.2f}"
 
 
 # ============================================================
-# Main extraction function
+# Main
 # ============================================================
 
 def extract_lazada(text: str, client_tax_id: str = "") -> Dict[str, Any]:
     """
-    Extract Lazada Tax Invoice/Receipt (Enhanced v3.0)
-    
-    Args:
-        text: PDF text content
-        client_tax_id: Client's Tax ID for vendor code mapping
-                      (Rabbit/SHD/TopOne)
-    
-    Returns:
-        PEAK A-U formatted dict with:
-        - D: Vendor code (C00411 for Rabbit, etc.)
-        - L: Short description (Marketplace Expense)
-        - T: Clean notes (no AI errors)
-        - All financial data complete
+    FIXED mapping rule (per your latest requirement):
+
+    Separate:
+      total_ex_vat
+      vat_amount
+      total_inc_vat  (PRIMARY)
+      wht_amount_3pct
+
+    Mapping:
+      row["N_unit_price"]  = total_inc_vat
+      row["R_paid_amount"] = total_inc_vat
+      row["O_vat_rate"]    = "7%"
+      row["P_wht"]         = "3%"
+      ❌ Never map wht_amount into totals.
     """
     t = normalize_text(text)
     row = base_row_dict()
-    
-    # ========================================
-    # STEP 1: Vendor identification & code mapping
-    # ========================================
-    
-    # Get Lazada Tax ID (vendor)
-    vendor_tax = find_vendor_tax_id(t, 'Lazada')
-    if vendor_tax:
-        row['E_tax_id_13'] = vendor_tax
-    else:
-        row['E_tax_id_13'] = VENDOR_LAZADA
-    
-    # Get vendor code (CLIENT-AWARE)
+
+    # --------------------------
+    # STEP 1: Vendor tax & code
+    # --------------------------
+    vendor_tax = find_vendor_tax_id(t, "Lazada")
+    row["E_tax_id_13"] = vendor_tax or VENDOR_LAZADA
+
+    if not client_tax_id:
+        client_tax_id = _pick_client_tax_id(t)
+
     if VENDOR_MAPPING_AVAILABLE and client_tax_id:
-        vendor_code = get_vendor_code(
-            client_tax_id=client_tax_id,
-            vendor_tax_id=row['E_tax_id_13'],
-            vendor_name="Lazada"
-        )
-        row['D_vendor_code'] = vendor_code  # e.g., C00411 for Rabbit
+        try:
+            row["D_vendor_code"] = get_vendor_code(
+                client_tax_id=client_tax_id,
+                vendor_tax_id=row["E_tax_id_13"],
+                vendor_name="Lazada",
+            )
+        except Exception:
+            row["D_vendor_code"] = "Lazada"
     else:
-        row['D_vendor_code'] = 'Lazada'  # Fallback
-    
-    # Branch
-    branch = find_branch(t)
-    if branch:
-        row['F_branch_5'] = branch
-    else:
-        row['F_branch_5'] = '00000'
-    
-    # ========================================
-    # STEP 2: Document number (ENHANCED)
-    # ========================================
-    
+        row["D_vendor_code"] = "Lazada"
+
+    br = find_branch(t)
+    row["F_branch_5"] = br if br else "00000"
+
+    # --------------------------
+    # STEP 2: Invoice No
+    # --------------------------
     invoice_no = ""
-    
-    # Try THMPTI format first (most specific)
     m = RE_LAZADA_DOC_THMPTI.search(t)
     if m:
         invoice_no = m.group(1)
-    
-    # Try strict format
+
     if not invoice_no:
-        m = RE_LAZADA_DOC_STRICT.search(t)
+        m = RE_LAZADA_INVOICE_NO_FIELD.search(t)
         if m:
-            invoice_no = m.group(1)
-    
-    # Try Invoice No field
+            invoice_no = m.group(1).strip()
+
     if not invoice_no:
-        m = RE_LAZADA_INVOICE_NO.search(t)
-        if m:
-            invoice_no = m.group(1)
-    
-    # Use enhanced common.py (with full reference support)
-    if not invoice_no:
-        invoice_no = find_invoice_no(t, 'Lazada')
-    
+        invoice_no = find_invoice_no(t, "Lazada")
+
     if invoice_no:
-        row['G_invoice_no'] = invoice_no
-        row['C_reference'] = invoice_no
-    
-    # ========================================
-    # STEP 3: Dates
-    # ========================================
-    
-    date = ''
-    
-    # Try Invoice Date field
+        row["G_invoice_no"] = invoice_no
+        row["C_reference"] = invoice_no
+
+    # --------------------------
+    # STEP 3: Date & Period
+    # --------------------------
+    doc_date = ""
     m = RE_LAZADA_INVOICE_DATE.search(t)
     if m:
-        date = parse_date_to_yyyymmdd(m.group(1))
-    
-    # Fallback to best date
-    if not date:
-        date = find_best_date(t)
-    
-    if date:
-        row['B_doc_date'] = date
-        row['H_invoice_date'] = date
-        row['I_tax_purchase_date'] = date
-    
-    # Extract period
-    period_text = ''
+        doc_date = parse_date_to_yyyymmdd(m.group(1)) or ""
+
+    if not doc_date:
+        doc_date = find_best_date(t) or ""
+
+    if doc_date:
+        row["B_doc_date"] = doc_date
+        row["H_invoice_date"] = doc_date
+        row["I_tax_purchase_date"] = doc_date
+
+    period_text = ""
     m = RE_LAZADA_PERIOD.search(t)
     if m:
-        period_start = parse_date_to_yyyymmdd(m.group(1))
-        period_end = parse_date_to_yyyymmdd(m.group(2))
-        if period_start and period_end:
-            # Format: 2025-12-01 to 2025-12-07
-            period_text = f"Period: {period_start[:4]}-{period_start[4:6]}-{period_start[6:]} to {period_end[:4]}-{period_end[4:6]}-{period_end[6:]}"
-    
-    # ========================================
-    # STEP 4: Seller information (ENHANCED)
-    # ========================================
-    
+        p1 = parse_date_to_yyyymmdd(m.group(1)) or ""
+        p2 = parse_date_to_yyyymmdd(m.group(2)) or ""
+        if p1 and len(p1) == 8:
+            p1_fmt = f"{p1[:4]}-{p1[4:6]}-{p1[6:]}"
+        else:
+            p1_fmt = m.group(1)
+        if p2 and len(p2) == 8:
+            p2_fmt = f"{p2[:4]}-{p2[4:6]}-{p2[6:]}"
+        else:
+            p2_fmt = m.group(2)
+        period_text = f"Period: {p1_fmt} - {p2_fmt}"
+
+    # --------------------------
+    # STEP 4: Seller code
+    # --------------------------
     seller_code = extract_seller_code_lazada(t)
-    
-    # ========================================
-    # STEP 5: Financial amounts
-    # ========================================
-    
-    amounts = extract_amounts(t)
-    
-    subtotal = amounts['subtotal']
-    vat = amounts['vat']
-    total = amounts['total']
-    wht_rate = amounts['wht_rate'] or '3%'
-    wht_amount = amounts['wht_amount']
-    
-    # Try to extract WHT from Thai text if not found
-    if not wht_amount:
-        wht_rate_thai, wht_amount_thai = extract_wht_from_text(t)
-        if wht_amount_thai:
-            wht_rate = wht_rate_thai
-            wht_amount = wht_amount_thai
-    
-    # Set amounts
-    row['M_qty'] = '1'
-    
-    if subtotal:
-        row['N_unit_price'] = subtotal
-    elif total:
-        row['N_unit_price'] = total
-    
-    if total:
-        row['R_paid_amount'] = total
-    elif subtotal:
-        row['R_paid_amount'] = subtotal
-    
-    # VAT
-    row['J_price_type'] = '1'
-    row['O_vat_rate'] = '7%'
-    
-    # WHT
-    if wht_amount:
-        row['P_wht'] = wht_amount
-        row['S_pnd'] = '53'
-    
-    # Payment method
-    row['Q_payment_method'] = 'หักจากยอดขาย'
-    
-    # ========================================
-    # STEP 6: Fee breakdown
-    # ========================================
-    
-    short_desc, fee_notes = extract_lazada_fee_summary(t)
-    
-    # ========================================
-    # STEP 7: Description (SHORT & CLEAN)
-    # ========================================
-    
-    if VENDOR_MAPPING_AVAILABLE:
-        # Use simple category
-        row['L_description'] = "Marketplace Expense"
-        row['U_group'] = "Marketplace Expense"
+
+    # --------------------------
+    # STEP 5: Amounts (STRICT)
+    # --------------------------
+    total_ex_vat, vat_amount, total_inc_vat = extract_totals_block(t)
+
+    # Derive total_inc_vat if missing but ex+vat exist (still safe)
+    if not total_inc_vat:
+        derived = _derive_total_inc_vat(total_ex_vat, vat_amount)
+        if derived:
+            total_inc_vat = derived
+
+    # FINAL fallback: use extract_amounts BUT NEVER allow wht_amount to become total
+    if not total_inc_vat:
+        a = extract_amounts(t)
+        # Only accept "total" if it's plausible and not equal to wht_amount
+        cand_total = a.get("total", "") or ""
+        cand_wht = a.get("wht_amount", "") or ""
+        if cand_total and cand_total != cand_wht:
+            total_inc_vat = cand_total
+
+    # If still missing: fallback to total_ex_vat (still NOT WHT)
+    if not total_inc_vat and total_ex_vat:
+        total_inc_vat = total_ex_vat
+
+    # --------------------------
+    # STEP 6: WHT (STRICT 3%)
+    # --------------------------
+    wht_rate, wht_amount_3pct = extract_wht_from_text(t)
+
+    # fallback from extract_amounts only if it says 3% and amount exists
+    if not wht_amount_3pct:
+        a = extract_amounts(t)
+        r = (a.get("wht_rate", "") or "").strip()
+        amt = (a.get("wht_amount", "") or "").strip()
+        if r == "3%" and amt:
+            wht_amount_3pct = amt
+            wht_rate = "3%"
+
+    # enforce rule: we only care about 3% here
+    has_wht_3 = (wht_rate == "3%" and bool(wht_amount_3pct))
+
+    # --------------------------
+    # STEP 7: Set PEAK fields (per your strict mapping)
+    # --------------------------
+    row["M_qty"] = "1"
+
+    if total_inc_vat:
+        row["N_unit_price"] = total_inc_vat
+        row["R_paid_amount"] = total_inc_vat
     else:
-        # Build description
-        desc_parts = []
-        desc_parts.append('Lazada - Marketplace Service Fees')
-        
-        if short_desc:
-            desc_parts.append(short_desc)
-        
-        if seller_code:
-            desc_parts.append(f"Seller: {seller_code}")
-        
-        if period_text:
-            desc_parts.append(period_text)
-        
-        if subtotal and total:
-            desc_parts.append(f"Subtotal ฿{subtotal} + VAT ฿{vat} = Total ฿{total}")
-        elif total:
-            desc_parts.append(f"Total ฿{total}")
-        
-        if wht_amount:
-            desc_parts.append(f"WHT {wht_rate}: ฿{wht_amount}")
-        
-        row['L_description'] = ' | '.join(desc_parts)
-        row['U_group'] = 'Marketplace Expense'
-    
-    # ========================================
-    # STEP 8: Notes (CLEAN & STRUCTURED)
-    # ========================================
-    
-    note_parts = []
-    
-    # Seller code
+        # keep stable defaults, never use WHT amount
+        row["N_unit_price"] = row.get("N_unit_price") or "0"
+        row["R_paid_amount"] = row.get("R_paid_amount") or "0"
+
+    row["J_price_type"] = "1"
+    row["O_vat_rate"] = "7%"
+
+    row["Q_payment_method"] = "หักจากยอดขาย"
+
+    # P_wht per your requirement = "3%" (rate), not amount
+    row["P_wht"] = "3%" if has_wht_3 else "0"
+    if has_wht_3:
+        row["S_pnd"] = "53"
+
+    # --------------------------
+    # STEP 8: Fee breakdown (notes only)
+    # --------------------------
+    short_desc, fee_notes, fee_list = extract_lazada_fee_summary(t)
+
+    # --------------------------
+    # STEP 9: Description / Group
+    # --------------------------
+    row["L_description"] = "Marketplace Expense"
+    row["U_group"] = "Marketplace Expense"
+
+    # --------------------------
+    # STEP 10: Notes (clean)
+    # --------------------------
+    note_parts: List[str] = []
+
     if seller_code:
         note_parts.append(f"Seller Code: {seller_code}")
-    
-    # Period
+    if client_tax_id:
+        note_parts.append(f"Client Tax ID: {client_tax_id}")
     if period_text:
         note_parts.append(period_text)
-    
-    # Fee breakdown (detailed)
+
     if fee_notes:
-        note_parts.append('\nFee Breakdown:')
+        note_parts.append("\nFee Breakdown:")
         note_parts.append(fee_notes)
-    
-    # Financial summary
-    if subtotal and vat and total:
-        note_parts.append(f"\nFinancial Summary:")
-        note_parts.append(f"Subtotal: ฿{subtotal}")
-        note_parts.append(f"VAT 7%: ฿{vat}")
-        note_parts.append(f"Total: ฿{total}")
-    
-    # WHT
-    if wht_rate and wht_amount:
-        note_parts.append(f"\nWithholding Tax {wht_rate}: ฿{wht_amount}")
-    
-    # ❌ NO AI ERRORS - Keep clean!
-    row['T_note'] = '\n'.join(note_parts) if note_parts else ""
-    
-    # ========================================
-    # STEP 9: Final formatting
-    # ========================================
-    
-    row['K_account'] = ''
-    
+
+    note_parts.append("\nFinancial Summary:")
+    if total_ex_vat:
+        note_parts.append(f"Total (ex VAT): ฿{total_ex_vat}")
+    if vat_amount:
+        note_parts.append(f"VAT 7%: ฿{vat_amount}")
+    if total_inc_vat:
+        note_parts.append(f"Total (inc VAT): ฿{total_inc_vat}")
+
+    if has_wht_3:
+        note_parts.append(f"\nWithholding Tax 3%: ฿{wht_amount_3pct}")
+
+    row["T_note"] = "\n".join(note_parts).strip() if note_parts else ""
+
+    # final
+    row["K_account"] = ""
     return format_peak_row(row)
 
 
-# ============================================================
-# Export
-# ============================================================
-
 __all__ = [
-    'extract_lazada',
-    'extract_seller_code_lazada',
-    'extract_lazada_fee_summary',
-    'extract_wht_from_text',
+    "extract_lazada",
+    "extract_seller_code_lazada",
+    "extract_lazada_fee_summary",
+    "extract_wht_from_text",
+    "extract_totals_block",
 ]

@@ -1,470 +1,325 @@
-# backend/app/extractors/tiktok.py
-"""
-TikTok Shop extractor - PEAK A-U format (Enhanced v3.0)
-Supports: Platform service fees with 7% VAT and 3% WHT
-Enhanced with:
-  - Vendor code mapping (Rabbit/SHD/TopOne)
-  - Clean descriptions (Marketplace Expense)
-  - Structured notes (no errors)
-  - Complete fee breakdown (8+ fee types)
-"""
 from __future__ import annotations
 
 import re
-from typing import Dict, Any, List, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from .common import (
-    base_row_dict,
-    normalize_text,
-    find_vendor_tax_id,
-    find_branch,
-    find_invoice_no,
-    find_best_date,
-    parse_en_date,
-    extract_amounts,
-    format_peak_row,
-    parse_money,
+from ..utils.text_utils import normalize_text
+
+# -------------------------------------------------------------------
+# TikTok invoice patterns (best-effort, robust)
+# Goals (FIX):
+# 1) Separate amounts clearly:
+#    - total_ex_vat
+#    - vat_amount
+#    - total_inc_vat (PRIMARY)
+#    - wht_amount_3pct
+# 2) Mapping MUST be:
+#    row["N_unit_price"]  = total_inc_vat
+#    row["R_paid_amount"] = total_inc_vat
+#    row["O_vat_rate"]    = "7%"
+#    row["P_wht"]         = "3%"
+# 3) NEVER put wht_amount into unit_price/paid_amount
+# -------------------------------------------------------------------
+
+RE_TTSTH = re.compile(r"\bTTSTH\d{8,}\b", re.IGNORECASE)
+
+# Prefer vendor tax id line explicitly
+RE_VENDOR_TAX_LINE = re.compile(
+    r"(tax\s*registration\s*number)\s*[:：\-]?\s*(\d{13})",
+    re.IGNORECASE,
 )
 
-# ========================================
-# Import vendor mapping (with fallback)
-# ========================================
-try:
-    from .vendor_mapping import (
-        get_vendor_code,
-        get_expense_category,
-        VENDOR_TIKTOK,
-    )
-    VENDOR_MAPPING_AVAILABLE = True
-except ImportError:
-    VENDOR_MAPPING_AVAILABLE = False
-    VENDOR_TIKTOK = "0105566214176"  # TikTok default Tax ID
-
-# ============================================================
-# TikTok-specific patterns (enhanced)
-# ============================================================
-
-# Invoice number (TTSTH format - 14+ digits)
-RE_TIKTOK_INVOICE_NO = re.compile(
-    r'Invoice\s*number\s*[:#：]?\s*(TTSTH\d{14,})',
-    re.IGNORECASE
+# Client/Buyer tax id line (Bill To / Tax ID) - used only to avoid picking client's id
+RE_CLIENT_TAX_LINE = re.compile(
+    r"\bTax\s*ID\s*[:：\-]?\s*(\d{13})\b",
+    re.IGNORECASE,
 )
 
-# Date patterns (English format: Dec 9, 2025)
-RE_TIKTOK_INVOICE_DATE = re.compile(
-    r'Invoice\s*date\s*[:#：]?\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})',
-    re.IGNORECASE
+RE_TAX_ID_13_ANY = re.compile(r"\b\d{13}\b")
+
+# Branch (00000 / 5 digits)
+RE_BRANCH_5 = re.compile(r"(branch|สาขา)\s*[:\-]?\s*(\d{1,5})", re.IGNORECASE)
+
+# Dates
+RE_DATE_ANY = re.compile(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b")  # YYYY-MM-DD or YYYY/MM/DD
+RE_INVOICE_DATE_LINE = re.compile(r"(invoice\s*date)\s*[:：\-]?\s*(.+)", re.IGNORECASE)
+RE_DOC_DATE_LINE = re.compile(r"(document\s*date|วันที่เอกสาร)\s*[:：\-]?\s*(.+)", re.IGNORECASE)
+
+# TikTok commonly shows "Dec 9, 2025"
+RE_DATE_MON_DD_YYYY = re.compile(
+    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),\s*(\d{4})\b",
+    re.IGNORECASE,
 )
 
-# Period extraction (Dec 3, 2025 - Dec 9, 2025)
-RE_TIKTOK_PERIOD = re.compile(
-    r'Period\s*[:#：]?\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\s*[-–]\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})',
-    re.IGNORECASE
+# Amounts
+RE_MONEY = re.compile(r"(-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|-?\d+(?:\.\d{1,2})?)")
+
+# TikTok totals keywords (more robust)
+RE_TOTAL_INCL = re.compile(
+    r"(total\s*amount.*including\s*vat|total\s*amount\s*\(including\s*vat\)|amount\s*due|grand\s*total)",
+    re.IGNORECASE,
+)
+RE_TOTAL_VAT = re.compile(r"(total\s*vat|vat\s*amount|value\s*added\s*tax)", re.IGNORECASE)
+RE_SUBTOTAL_EXCL = re.compile(r"(subtotal.*excluding\s*vat|total.*excluding\s*vat|subtotal\s*\(excluding\s*vat\))", re.IGNORECASE)
+
+# Withholding tax (WHT)
+# Example: "withheld tax at the rate of 3%, amounting to ฿4,414.88"
+RE_WHT_AMOUNTING = re.compile(
+    r"(withheld\s*tax|withholding\s*tax).*?rate\s*of\s*(\d{1,2})\s*%.*?amounting\s*to\s*฿?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+    re.IGNORECASE | re.DOTALL,
 )
 
-# Client information
-RE_TIKTOK_CLIENT_NAME = re.compile(
-    r'Client\s*Name\s*[:#：]?\s*(.+?)(?:\s*[（(]Head\s*Office[）)])?$',
-    re.IGNORECASE | re.MULTILINE
+# Sometimes written differently
+RE_WHT_GENERIC = re.compile(
+    r"(withheld|withholding|wht).*?(\d{1,2})\s*%.*?(?:฿|THB)?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
+    re.IGNORECASE | re.DOTALL,
 )
 
-RE_TIKTOK_TAX_ID = re.compile(
-    r'Tax\s*(?:ID|Registration\s*Number)\s*[:#：]?\s*([0-9]{13})',
-    re.IGNORECASE
-)
+# Exclude picking numbers from WHT chunks when searching totals
+RE_WHT_HINT = re.compile(r"(withheld\s*tax|withholding\s*tax|wht)", re.IGNORECASE)
 
-# Fee line extraction (TikTok table format)
-# Example: "- BCD/FS Service Fee ฿14,726.42 ฿1,030.85 ฿15,757.27"
-RE_TIKTOK_FEE_LINE = re.compile(
-    r'^\s*-\s*(.+?)\s+฿([0-9,]+\.[0-9]{2})\s+฿([0-9,]+\.[0-9]{2})\s+฿([0-9,]+\.[0-9]{2})\s*$',
-    re.MULTILINE
-)
+# Optional ads/fee hints (keep simple)
+RE_ADS_HINT = re.compile(r"\b(ads|advertising|promotion|โฆษณา|ค่าโฆษณา)\b", re.IGNORECASE)
 
-# Financial amounts (TikTok specific)
-RE_TIKTOK_SUBTOTAL = re.compile(
-    r'Subtotal\s*[（(]?\s*excluding\s*VAT\s*[）)]?\s*฿?\s*([0-9,]+\.[0-9]{2})',
-    re.IGNORECASE
-)
 
-RE_TIKTOK_VAT = re.compile(
-    r'Total\s*VAT\s*7%\s*฿?\s*([0-9,]+\.[0-9]{2})',
-    re.IGNORECASE
-)
+def _clean_digits(s: Any, max_len: int | None = None) -> str:
+    if s is None:
+        return ""
+    out = "".join([c for c in str(s) if c.isdigit()])
+    if max_len is not None:
+        out = out[:max_len]
+    return out
 
-RE_TIKTOK_TOTAL = re.compile(
-    r'Total\s*amount\s*[（(]?\s*including\s*VAT\s*[）)]?\s*฿?\s*([0-9,]+\.[0-9]{2})',
-    re.IGNORECASE
-)
 
-# WHT extraction (Thai and English)
-RE_TIKTOK_WHT_EN = re.compile(
-    r'withheld\s+tax\s+at\s+the\s+rate\s+of\s+(\d+)%.*?amounting\s+to\s+฿?\s*([0-9,]+\.[0-9]{2})',
-    re.IGNORECASE | re.DOTALL
-)
+def _money_to_str(v: str) -> str:
+    if not v:
+        return ""
+    s = v.strip().replace(",", "").replace("฿", "").replace("THB", "").strip()
+    try:
+        x = float(s)
+        if x < 0:
+            return ""
+        return f"{x:.2f}"
+    except Exception:
+        return ""
 
-RE_TIKTOK_WHT_TH = re.compile(
-    r'หักภาษี\s*ณ\s*ที่จ่าย.*?อัตรา\s*(\d+)\s*%.*?จำนวน\s*฿?\s*([0-9,]+\.[0-9]{2})',
-    re.IGNORECASE | re.DOTALL
-)
 
-# ============================================================
-# Helper functions
-# ============================================================
-
-def extract_tiktok_client_info(text: str) -> Tuple[str, str]:
+def _to_yyyymmdd_from_text(s: str) -> str:
     """
-    Extract TikTok client name and Tax ID
-    
-    Returns:
-        (client_name, client_tax_id)
+    Support:
+    - YYYY-MM-DD / YYYY/MM/DD
+    - 'Dec 9, 2025'
     """
-    t = normalize_text(text)
-    client_name = ""
-    client_tax_id = ""
-    
-    # Client name
-    m = RE_TIKTOK_CLIENT_NAME.search(t)
+    if not s:
+        return ""
+
+    m = RE_DATE_ANY.search(s)
     if m:
-        client_name = m.group(1).strip()
-        # Remove Thai parentheses
-        client_name = client_name.replace('（', '(').replace('）', ')')
-    
-    # Client Tax ID (find the one that's NOT TikTok's)
-    for m in RE_TIKTOK_TAX_ID.finditer(t):
-        tax_id = m.group(1)
-        # Skip TikTok's own Tax ID
-        if tax_id != VENDOR_TIKTOK and tax_id != "0105566214176":
-            client_tax_id = tax_id
-            break
-    
-    return (client_name, client_tax_id)
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31 and 1900 <= y <= 2100:
+            return f"{y:04d}{mo:02d}{d:02d}"
+
+    m2 = RE_DATE_MON_DD_YYYY.search(s)
+    if m2:
+        mon_map = {
+            "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+            "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        }
+        mon = mon_map.get(m2.group(1).lower(), 0)
+        d = int(m2.group(2))
+        y = int(m2.group(3))
+        if 1 <= mon <= 12 and 1 <= d <= 31 and 1900 <= y <= 2100:
+            return f"{y:04d}{mon:02d}{d:02d}"
+
+    return ""
 
 
-def extract_tiktok_fee_summary(text: str, max_lines: int = 10) -> Tuple[str, List[Dict[str, str]]]:
+def _find_amount_near_keyword_excluding(text: str, keyword_re: re.Pattern, window: int = 240) -> str:
     """
-    Extract fee breakdown from TikTok invoice
-    
-    Args:
-        text: PDF text
-        max_lines: Maximum fee items to extract
-    
-    Returns:
-        (short_summary, fee_list)
-        
-    fee_list format:
-    [
-        {'name': 'BCD/FS Service Fee', 'ex_vat': '14726.42', 'vat': '1030.85', 'inc_vat': '15757.27'},
-        ...
-    ]
+    Find amount near keyword BUT avoid chunks that are clearly about WHT.
+    Picks the last number (right side) in the chunk.
     """
-    t = normalize_text(text)
-    
-    fee_list = []
-    
-    for m in RE_TIKTOK_FEE_LINE.finditer(t):
-        fee_name = m.group(1).strip()
-        ex_vat = m.group(2).replace(',', '')
-        vat = m.group(3).replace(',', '')
-        inc_vat = m.group(4).replace(',', '')
-        
-        fee_list.append({
-            'name': fee_name,
-            'ex_vat': ex_vat,
-            'vat': vat,
-            'inc_vat': inc_vat
-        })
-        
-        if len(fee_list) >= max_lines:
-            break
-    
-    if not fee_list:
-        return ('', [])
-    
-    # Generate short summary
-    top_fees = [f['name'] for f in fee_list[:3]]
-    short = ', '.join(top_fees)
-    if len(fee_list) > 3:
-        short += f' (+{len(fee_list)-3} more)'
-    
-    return (short, fee_list)
+    if not text:
+        return ""
+    m = keyword_re.search(text)
+    if not m:
+        return ""
+
+    start = max(0, m.start() - 60)
+    end = min(len(text), m.end() + window)
+    chunk = text[start:end]
+
+    # If chunk contains WHT hint, try to cut the chunk before WHT hint to avoid picking wht amount
+    w = RE_WHT_HINT.search(chunk)
+    if w:
+        chunk = chunk[: w.start()]
+
+    nums = RE_MONEY.findall(chunk)
+    if not nums:
+        return ""
+    return _money_to_str(nums[-1])
 
 
-# ============================================================
-# Main extraction function
-# ============================================================
+def _extract_wht_amount_3pct(text: str) -> str:
+    """
+    Extract WHT amount (3%) only. Returns money string like '4414.88' or ''.
+    This MUST NOT be mapped into unit_price/paid_amount.
+    """
+    if not text:
+        return ""
+
+    m = RE_WHT_AMOUNTING.search(text)
+    if m:
+        rate = _clean_digits(m.group(2), 2)
+        amt = _money_to_str(m.group(3))
+        if rate == "3" and amt:
+            return amt
+
+    m2 = RE_WHT_GENERIC.search(text)
+    if m2:
+        rate = _clean_digits(m2.group(2), 2)
+        amt = _money_to_str(m2.group(3))
+        if rate == "3" and amt:
+            return amt
+
+    return ""
+
+
+def _blank_row() -> Dict[str, Any]:
+    """
+    Baseline defaults for PEAK (aligned with your pipeline).
+    Note: D_vendor_code is a platform label here; extract_service/vendor_mapping will convert to Cxxxxx.
+    """
+    return {
+        "B_doc_date": "",
+        "C_reference": "",
+        "D_vendor_code": "TikTok",
+        "E_tax_id_13": "",      # vendor tax id
+        "F_branch_5": "00000",
+        "G_invoice_no": "",
+        "H_invoice_date": "",
+        "I_tax_purchase_date": "",
+        "J_price_type": "1",    # VAT separated
+        "K_account": "",
+        "L_description": "",
+        "M_qty": "1",
+        "N_unit_price": "0",
+        "O_vat_rate": "7%",
+        "P_wht": "0",           # we will set to "3%" if WHT exists (per your requirement)
+        "Q_payment_method": "",
+        "R_paid_amount": "0",
+        "S_pnd": "",
+        "T_note": "",           # ✅ must stay empty
+        "U_group": "Marketplace Expense",
+    }
+
 
 def extract_tiktok(text: str, client_tax_id: str = "") -> Dict[str, Any]:
     """
-    Extract TikTok Shop Tax Invoice/Receipt (Enhanced v3.0)
-    
-    Args:
-        text: PDF text content
-        client_tax_id: Client's Tax ID for vendor code mapping
-                      (Rabbit/SHD/TopOne)
-    
-    Returns:
-        PEAK A-U formatted dict with:
-        - D: Vendor code (C00562 for Rabbit, C01246 for SHD, C00051 for TopOne)
-        - L: Short description (Marketplace Expense)
-        - T: Clean notes (no AI errors)
-        - All financial data complete
+    TikTok extractor (rule-based) - FIXED for:
+    - Use Total Included VAT as primary
+    - Separate total_ex_vat / vat_amount / total_inc_vat / wht_amount_3pct
+    - Never let WHT amount pollute N_unit_price / R_paid_amount
+    - P_wht is "3%" (rate) when found, else "0"
+    - T_note always empty
     """
-    t = normalize_text(text)
-    row = base_row_dict()
-    
-    # ========================================
-    # STEP 1: Vendor identification & code mapping
-    # ========================================
-    
-    # Get TikTok Tax ID (vendor)
-    vendor_tax = find_vendor_tax_id(t, 'TikTok')
-    if vendor_tax:
-        row['E_tax_id_13'] = vendor_tax
-    else:
-        row['E_tax_id_13'] = VENDOR_TIKTOK
-    
-    # Auto-detect client if not provided
-    if not client_tax_id:
-        _, detected_client_tax = extract_tiktok_client_info(t)
-        if detected_client_tax:
-            client_tax_id = detected_client_tax
-    
-    # Get vendor code (CLIENT-AWARE)
-    if VENDOR_MAPPING_AVAILABLE and client_tax_id:
-        vendor_code = get_vendor_code(
-            client_tax_id=client_tax_id,
-            vendor_tax_id=row['E_tax_id_13'],
-            vendor_name="TikTok"
-        )
-        row['D_vendor_code'] = vendor_code  # e.g., C00562 for Rabbit
-    else:
-        row['D_vendor_code'] = 'TikTok'  # Fallback
-    
-    # Branch
-    branch = find_branch(t)
-    if branch:
-        row['F_branch_5'] = branch
-    else:
-        row['F_branch_5'] = '00000'
-    
-    # ========================================
-    # STEP 2: Document number (ENHANCED)
-    # ========================================
-    
-    invoice_no = ""
-    
-    # Try TikTok invoice number format (TTSTH...)
-    m = RE_TIKTOK_INVOICE_NO.search(t)
-    if m:
-        invoice_no = m.group(1)
-    
-    # Use enhanced common.py (with full reference support)
-    if not invoice_no:
-        invoice_no = find_invoice_no(t, 'TikTok')
-    
-    if invoice_no:
-        row['G_invoice_no'] = invoice_no
-        row['C_reference'] = invoice_no
-    
-    # ========================================
-    # STEP 3: Dates
-    # ========================================
-    
-    date = ""
-    
-    # Try Invoice Date field (English format)
-    m = RE_TIKTOK_INVOICE_DATE.search(t)
-    if m:
-        date_str = m.group(1)
-        date = parse_en_date(date_str)
-    
-    # Fallback to best date
-    if not date:
-        date = find_best_date(t)
-    
-    if date:
-        row['B_doc_date'] = date
-        row['H_invoice_date'] = date
-        row['I_tax_purchase_date'] = date
-    
-    # Extract period
-    period_text = ''
-    m = RE_TIKTOK_PERIOD.search(t)
-    if m:
-        period_start = m.group(1)
-        period_end = m.group(2)
-        period_text = f"Period: {period_start} - {period_end}"
-    
-    # ========================================
-    # STEP 4: Client information
-    # ========================================
-    
-    client_name, client_tax_detected = extract_tiktok_client_info(t)
-    
-    # ========================================
-    # STEP 5: Financial amounts (TikTok specific)
-    # ========================================
-    
-    subtotal = ''
-    vat = ''
-    total = ''
-    
-    # Try TikTok-specific patterns first
-    m = RE_TIKTOK_SUBTOTAL.search(t)
-    if m:
-        subtotal = parse_money(m.group(1))
-    
-    m = RE_TIKTOK_VAT.search(t)
-    if m:
-        vat = parse_money(m.group(1))
-    
-    m = RE_TIKTOK_TOTAL.search(t)
-    if m:
-        total = parse_money(m.group(1))
-    
-    # Fallback to generic extraction
-    if not subtotal or not total:
-        amounts = extract_amounts(t)
-        subtotal = subtotal or amounts['subtotal']
-        vat = vat or amounts['vat']
-        total = total or amounts['total']
-    
-    # Set amounts
-    row['M_qty'] = '1'
-    
-    if subtotal:
-        row['N_unit_price'] = subtotal
-        row['R_paid_amount'] = subtotal
-    elif total:
-        row['N_unit_price'] = total
-        row['R_paid_amount'] = total
-    
-    # VAT
-    row['J_price_type'] = '1'
-    row['O_vat_rate'] = '7%'
-    
-    # Payment method
-    row['Q_payment_method'] = 'หักจากยอดขาย'
-    
-    # ========================================
-    # STEP 6: WHT (Withholding Tax)
-    # ========================================
-    
-    wht_rate = ''
-    wht_amount = ''
-    
-    # Try English pattern
-    m = RE_TIKTOK_WHT_EN.search(t)
-    if m:
-        wht_rate = f"{m.group(1)}%"
-        wht_amount = parse_money(m.group(2))
-    
-    # Try Thai pattern
-    if not wht_amount:
-        m = RE_TIKTOK_WHT_TH.search(t)
-        if m:
-            wht_rate = f"{m.group(1)}%"
-            wht_amount = parse_money(m.group(2))
-    
-    # Fallback to generic extraction
-    if not wht_amount:
-        amounts = extract_amounts(t)
-        wht_amount = amounts['wht_amount']
-        wht_rate = amounts['wht_rate'] or '3%'
-    
-    if wht_amount:
-        row['P_wht'] = wht_amount
-        row['S_pnd'] = '53'
-    
-    # ========================================
-    # STEP 7: Fee breakdown
-    # ========================================
-    
-    short_fees, fee_list = extract_tiktok_fee_summary(t)
-    
-    # ========================================
-    # STEP 8: Description (SHORT & CLEAN)
-    # ========================================
-    
-    if VENDOR_MAPPING_AVAILABLE:
-        # Use simple category
-        row['L_description'] = "Marketplace Expense"
-        row['U_group'] = "Marketplace Expense"
-    else:
-        # Build description
-        desc_parts = []
-        desc_parts.append('TikTok Shop - Platform Service Fees')
-        
-        if short_fees:
-            # Take first 2 fees only
-            first_fees = ', '.join([f['name'] for f in fee_list[:2]])
-            desc_parts.append(first_fees)
-        
-        if period_text:
-            desc_parts.append(period_text)
-        
-        if subtotal and total:
-            desc_parts.append(f"Subtotal ฿{subtotal} + VAT ฿{vat} = Total ฿{total}")
-        elif total:
-            desc_parts.append(f"Total ฿{total}")
-        
-        if wht_amount:
-            desc_parts.append(f"WHT {wht_rate}: ฿{wht_amount}")
-        
-        row['L_description'] = ' | '.join(desc_parts)
-        row['U_group'] = 'Marketplace Expense'
-    
-    # ========================================
-    # STEP 9: Notes (CLEAN & STRUCTURED)
-    # ========================================
-    
-    note_parts = []
-    
-    # Client information
-    if client_name:
-        note_parts.append(f"Client: {client_name}")
-    if client_tax_detected and client_tax_detected != row['E_tax_id_13']:
-        note_parts.append(f"Client Tax ID: {client_tax_detected}")
-    
-    # Period
-    if period_text:
-        note_parts.append(f"\n{period_text}")
-    
-    # Fee breakdown (detailed)
-    if fee_list:
-        note_parts.append('\nFee Breakdown:')
-        for fee in fee_list:
-            note_parts.append(f"- {fee['name']}: ฿{fee['ex_vat']} + VAT ฿{fee['vat']} = ฿{fee['inc_vat']}")
-    
-    # Financial summary
-    if subtotal and vat and total:
-        note_parts.append(f"\nFinancial Summary:")
-        note_parts.append(f"Subtotal (excluding VAT): ฿{subtotal}")
-        note_parts.append(f"Total VAT 7%: ฿{vat}")
-        note_parts.append(f"Total (including VAT): ฿{total}")
-    
-    # WHT
-    if wht_rate and wht_amount:
-        note_parts.append(f"\nWithholding Tax {wht_rate}: ฿{wht_amount}")
-    
-    # ❌ NO AI ERRORS - Keep clean!
-    row['T_note'] = '\n'.join(note_parts) if note_parts else ""
-    
-    # ========================================
-    # STEP 10: Final formatting
-    # ========================================
-    
-    row['K_account'] = ''
-    
-    return format_peak_row(row)
+    t = normalize_text(text or "")
+    row = _blank_row()
 
+    if not t.strip():
+        return row
 
-# ============================================================
-# Export
-# ============================================================
+    # --- Reference / invoice no ---
+    tt = RE_TTSTH.search(t)
+    if tt:
+        ref = tt.group(0).strip()
+        row["C_reference"] = ref
+        row["G_invoice_no"] = ref
 
-__all__ = [
-    'extract_tiktok',
-    'extract_tiktok_client_info',
-    'extract_tiktok_fee_summary',
-]
+    # --- Vendor Tax ID (prefer Tax Registration Number) ---
+    vendor_tax = ""
+    m_vendor = RE_VENDOR_TAX_LINE.search(t)
+    if m_vendor:
+        vendor_tax = _clean_digits(m_vendor.group(2), 13)
+
+    # Avoid choosing client's tax id as vendor tax id
+    ctax = _clean_digits(client_tax_id, 13) if client_tax_id else ""
+    if not vendor_tax:
+        all_tax = RE_TAX_ID_13_ANY.findall(t)
+        for x in all_tax:
+            if ctax and x == ctax:
+                continue
+            vendor_tax = x
+            break
+
+    row["E_tax_id_13"] = vendor_tax
+
+    # --- Branch 5 digits ---
+    m_br = RE_BRANCH_5.search(t)
+    if m_br:
+        br = _clean_digits(m_br.group(2), 5)
+        row["F_branch_5"] = br.zfill(5) if br else "00000"
+    else:
+        row["F_branch_5"] = "00000"
+
+    # --- Dates ---
+    inv_date = ""
+    m_inv = RE_INVOICE_DATE_LINE.search(t)
+    if m_inv:
+        inv_date = _to_yyyymmdd_from_text(m_inv.group(2))
+    if not inv_date:
+        m_doc = RE_DOC_DATE_LINE.search(t)
+        if m_doc:
+            inv_date = _to_yyyymmdd_from_text(m_doc.group(2))
+    if not inv_date:
+        inv_date = _to_yyyymmdd_from_text(t)
+
+    row["H_invoice_date"] = inv_date
+    row["B_doc_date"] = inv_date
+    row["I_tax_purchase_date"] = inv_date
+
+    # =========================================================
+    # Amount separation (STRICT)
+    # =========================================================
+    total_ex_vat = _find_amount_near_keyword_excluding(t, RE_SUBTOTAL_EXCL)
+    vat_amount = _find_amount_near_keyword_excluding(t, RE_TOTAL_VAT)
+    total_inc_vat = _find_amount_near_keyword_excluding(t, RE_TOTAL_INCL)
+
+    # WHT amount 3% (do NOT map to totals)
+    wht_amount_3pct = _extract_wht_amount_3pct(t)
+
+    # Derive total_inc_vat if missing but subtotal+vat exist
+    if (not total_inc_vat) and total_ex_vat and vat_amount:
+        try:
+            total_inc_vat = f"{(float(total_ex_vat) + float(vat_amount)):.2f}"
+        except Exception:
+            pass
+
+    # Fallback: if still no total_inc_vat, use total_ex_vat (better than 0, still not WHT)
+    if not total_inc_vat and total_ex_vat:
+        total_inc_vat = total_ex_vat
+
+    # =========================================================
+    # Mapping (per your strict requirement)
+    # =========================================================
+    if total_inc_vat:
+        row["N_unit_price"] = total_inc_vat
+        row["R_paid_amount"] = total_inc_vat
+
+    # VAT columns (always 7% in this TikTok flow per your rule)
+    row["J_price_type"] = "1"
+    row["O_vat_rate"] = "7%"
+
+    # WHT column: rate only "3%" (if found), else "0"
+    row["P_wht"] = "3%" if wht_amount_3pct else "0"
+    if wht_amount_3pct:
+        row["S_pnd"] = "53"
+
+    # --- Description / Group (keep stable) ---
+    row["U_group"] = "Marketplace Expense"
+    row["L_description"] = "Advertising Expense" if RE_ADS_HINT.search(t) else "Marketplace Expense"
+
+    # ✅ T_note must be empty always
+    row["T_note"] = ""
+
+    return row
