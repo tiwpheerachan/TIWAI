@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Any, Tuple, List, Callable
+from typing import Dict, Any, Tuple, List, Callable, Optional
 import os
 import logging
 import inspect
@@ -74,7 +74,7 @@ PEAK_KEYS_ORDER: List[str] = [
     "U_group",
 ]
 
-# กัน AI / extractor เขียนทับ key ที่ทำให้ “เลื่อนช่อง”
+# กัน AI / extractor เขียนทับ key ที่ทำให้ "เลื่อนช่อง"
 _AI_BLACKLIST_KEYS = {"T_note", "U_group", "K_account"}
 
 # คีย์ภายในที่อนุญาตให้ผ่านได้ (metadata)
@@ -203,10 +203,12 @@ def _safe_call_extractor(
     *,
     filename: str = "",
     client_tax_id: str = "",
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    เรียก extractor แบบ backward-compatible:
-    - ถ้ารองรับ filename/client_tax_id -> ส่งให้
+    ✅ FIX: เรียก extractor แบบ backward-compatible + เพิ่ม cfg support
+    
+    - ถ้ารองรับ filename/client_tax_id/cfg -> ส่งให้
     - ถ้าไม่รองรับ -> fallback fn(text)
     """
     try:
@@ -218,12 +220,15 @@ def _safe_call_extractor(
             kwargs["filename"] = filename
         if "client_tax_id" in params and client_tax_id:
             kwargs["client_tax_id"] = client_tax_id
+        if "cfg" in params and cfg:  # ✅ เพิ่ม cfg support
+            kwargs["cfg"] = cfg
 
         if kwargs:
             return fn(text, **kwargs)  # type: ignore[arg-type]
     except Exception:
         pass
 
+    # Fallback attempts (backward compatibility)
     if client_tax_id:
         try:
             return fn(text, client_tax_id=client_tax_id)  # type: ignore
@@ -367,19 +372,38 @@ def extract_row_from_text(
     text: str,
     filename: str = "",
     client_tax_id: str = "",
+    cfg: Optional[Dict[str, Any]] = None,  # ✅ เพิ่ม cfg parameter
 ) -> Tuple[str, Dict[str, Any], List[str]]:
     """
-    return: platform, row, errors
+    ✅ FIX: เพิ่ม cfg parameter สำหรับ job_worker_fixed.py
+    
+    Args:
+        text: Document text
+        filename: Filename for hints
+        client_tax_id: Client tax ID (if known)
+        cfg: Job config (optional, contains client_tags/platforms/strictMode)
+    
+    Returns:
+        (platform, row, errors)
     """
 
     # 0) normalize inputs (safe)
     text = text or ""
     filename = filename or ""
     client_tax_id = (client_tax_id or "").strip()
+    cfg = cfg or {}
 
-    # 1) classify (✅ MUST pass filename)
+    # 1) classify (✅ MUST pass filename + cfg for better hints)
     try:
-        platform = classify_platform(text, filename=filename)
+        # ✅ Try to pass cfg to classifier if it supports it
+        try:
+            sig = inspect.signature(classify_platform)
+            if "cfg" in sig.parameters:
+                platform = classify_platform(text, filename=filename, cfg=cfg)
+            else:
+                platform = classify_platform(text, filename=filename)
+        except Exception:
+            platform = classify_platform(text, filename=filename)
     except Exception as e:
         logger.exception("classify_platform failed: %s", e)
         platform = "unknown"
@@ -393,21 +417,21 @@ def extract_row_from_text(
     # 2) extractor baseline
     try:
         if platform == "shopee":
-            row = _safe_call_extractor(extract_shopee, text, filename=filename, client_tax_id=client_tax_id)
+            row = _safe_call_extractor(extract_shopee, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
         elif platform == "lazada":
-            row = _safe_call_extractor(extract_lazada, text, filename=filename, client_tax_id=client_tax_id)
+            row = _safe_call_extractor(extract_lazada, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
         elif platform == "tiktok":
-            row = _safe_call_extractor(extract_tiktok, text, filename=filename, client_tax_id=client_tax_id)
+            row = _safe_call_extractor(extract_tiktok, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
         elif platform == "spx":
             if extract_spx is not None:
-                row = _safe_call_extractor(extract_spx, text, filename=filename, client_tax_id=client_tax_id)
+                row = _safe_call_extractor(extract_spx, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
             else:
                 # if spx extractor missing, fallback to generic but keep meta
-                row = _safe_call_extractor(extract_generic, text, filename=filename, client_tax_id=client_tax_id)
+                row = _safe_call_extractor(extract_generic, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
                 row["_missing_extractor"] = "spx"
         else:
             # ads/other/unknown -> generic
-            row = _safe_call_extractor(extract_generic, text, filename=filename, client_tax_id=client_tax_id)
+            row = _safe_call_extractor(extract_generic, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
     except Exception as e:
         logger.exception("Extractor error (platform=%s, file=%s)", platform, filename)
         row = _sanitize_incoming_row(extract_generic(text))
@@ -428,6 +452,8 @@ def extract_row_from_text(
     if os.getenv("STORE_CLASSIFIER_META", "1") == "1":
         row["_platform"] = platform
         row["_filename"] = filename
+        if cfg:  # ✅ เก็บ cfg meta
+            row["_cfg"] = str(cfg)[:200]
 
     # 3) AI ENHANCEMENT (optional + must be safe)
     if _AI_OK and extract_with_ai is not None and os.getenv("ENABLE_AI_EXTRACT", "0") == "1":

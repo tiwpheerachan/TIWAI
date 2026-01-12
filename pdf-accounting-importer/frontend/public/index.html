@@ -24,65 +24,79 @@
           <div class="sub">PEAK A–U · Realtime Progress + Edit + History</div>
         </div>
       </div>
+<!-- ✅ Backend URL (Redesigned / Collapsible) -->
+<details class="card backendCard" id="backendDrop">
+  <summary class="backendHeader">
+    <div class="backendTitleWrap">
+      <div class="backendTitle">Backend URL</div>
+    </div>
 
-      <!-- ✅ Backend card + Snow container -->
-      <div class="card backendSnow">
-        <div class="snowBox" id="snowBackend" data-snow="snowBackend" aria-hidden="true"></div>
+    <div class="backendToggle">
+      <span class="chev">▾</span>
+    </div>
+  </summary>
 
-        <div class="h">Backend URL</div>
+  <div class="backendBody">
+    <div class="field">
+      <label>เลือกปลายทาง (Preset)</label>
+      <select id="backendSelect">
+        <option value="https://ai-1-dq7u.onrender.com">
+          Render (แนะนำ) · https://ai-1-dq7u.onrender.com
+        </option>
+        <option value="http://localhost:8000">
+          Local · http://localhost:8000
+        </option>
+      </select>
+    </div>
 
-        <div class="field">
-          <label>เลือกปลายทาง (Preset)</label>
-          <select id="backendSelect">
-            <option value="https://ai-1-dq7u.onrender.com">Render (แนะนำ) · https://ai-1-dq7u.onrender.com</option>
-            <option value="http://localhost:8000">Local · http://localhost:8000</option>
-          </select>
-        </div>
+    <div class="field">
+      <label>เชื่อมต่อ API (แก้ไขเองได้)</label>
+      <input
+        id="backendUrl"
+        placeholder="https://ai-1-dq7u.onrender.com"
+      />
+    </div>
+  </div>
+</details>
 
-        <div class="field">
-          <label>เชื่อมต่อ API (แก้ไขเองได้)</label>
-          <input id="backendUrl" placeholder="https://ai-1-dq7u.onrender.com" />
-        </div>
+<div class="card settingsCard settingsPhoto">
+
+  <div class="settingsGrid">
+    <div class="settingsGroup">
+      <div class="settingsLabelRow">
+        <label>บริษัท (เลือกได้หลายอัน) · ไม่เลือก = ทุกบริษัท</label>
       </div>
 
-      <!-- ✅ NEW: Settings / Pre-upload filter -->
-      <div class="card">
-        <div class="h">0) Settings (Pre-Upload Filter)</div>
-
-        <div class="field" style="margin-top:0">
-          <label>บริษัท (เลือกได้หลายอัน) · ไม่เลือก = ทุกบริษัท</label>
-          <div class="chipRow" id="clientChips">
-            <button type="button" class="chip" data-client="SHD">SHD</button>
-            <button type="button" class="chip" data-client="TOPONE">TOPONE</button>
-            <button type="button" class="chip" data-client="RABBIT">RABBIT</button>
-            <button type="button" class="chip" data-client="HASHTAG">HASHTAG</button>
-
-            <button type="button" class="chip ghost" id="btnClientAll">All</button>
-            <button type="button" class="chip ghost" id="btnClientClear">Clear</button>
-          </div>
-          <div class="muted tiny" style="margin-top:6px">
-            CLIENT_RABBIT=0105561071873 · CLIENT_SHD=0105563022918 · CLIENT_TOPONE=0105565027615
-          </div>
-        </div>
-
-        <div class="field">
-          <label>Platform (เลือกได้หลายอัน) · ไม่เลือก = ทุกแพลตฟอร์ม</label>
-          <div class="chipRow" id="platformChips">
-            <button type="button" class="chip" data-platform="SHOPEE">SHOPEE</button>
-            <button type="button" class="chip" data-platform="LAZADA">LAZADA</button>
-            <button type="button" class="chip" data-platform="TIKTOK">TIKTOK</button>
-            <button type="button" class="chip" data-platform="SPX">SPX</button>
-            <button type="button" class="chip" data-platform="FACEBOOK">FACEBOOK</button>
-            <button type="button" class="chip" data-platform="OTHER">OTHER</button>
-
-            <button type="button" class="chip ghost" id="btnPlatformAll">All</button>
-            <button type="button" class="chip ghost" id="btnPlatformClear">Clear</button>
-          </div>
-          <div class="muted tiny" style="margin-top:6px">
-            * กรองด้วยชื่อไฟล์ก่อนอัปโหลด (best-effort)
-          </div>
-        </div>
+      <div class="chipRow chipsBig" id="clientChips">
+        <button type="button" class="chip" data-client="SHD">SHD</button>
+        <button type="button" class="chip" data-client="TOPONE">TOPONE</button>
+        <button type="button" class="chip" data-client="RABBIT">RABBIT</button>
+        <button type="button" class="chip" data-client="HASHTAG">HASHTAG</button>
+        <button type="button" class="chip ghost" id="btnClientAll">All</button>
+        <button type="button" class="chip ghost" id="btnClientClear">Clear</button>
       </div>
+    </div>
+
+    <div class="settingsDivider"></div>
+
+    <div class="settingsGroup">
+      <div class="settingsLabelRow">
+        <label>Platform (เลือกได้หลายอัน) · ไม่เลือก = ทุกแพลตฟอร์ม</label>
+      </div>
+
+      <div class="chipRow chipsBig" id="platformChips">
+        <button type="button" class="chip" data-platform="SHOPEE">SHOPEE</button>
+        <button type="button" class="chip" data-platform="LAZADA">LAZADA</button>
+        <button type="button" class="chip" data-platform="TIKTOK">TIKTOK</button>
+        <button type="button" class="chip" data-platform="SPX">SPX</button>
+        <button type="button" class="chip" data-platform="FACEBOOK">FACEBOOK</button>
+        <button type="button" class="chip" data-platform="OTHER">OTHER</button>
+        <button type="button" class="chip ghost" id="btnPlatformAll">All</button>
+        <button type="button" class="chip ghost" id="btnPlatformClear">Clear</button>
+      </div>
+    </div>
+  </div>
+</div>
 
       <div class="card">
         <div class="h">1) Upload Files</div>
@@ -103,10 +117,6 @@
         <div class="row" style="margin-top:12px">
           <button id="btnUpload" class="btn primary" disabled>อัปโหลด & ประมวลผล</button>
           <button id="btnHistory" class="btn">ประวัติ</button>
-        </div>
-
-        <div class="hintbar small muted" style="margin-top:10px">
-          PDF แบบสแกน/รูป: ตอนนี้จะเป็น <b>Needs review</b> (ยังไม่ทำ OCR)
         </div>
       </div>
 

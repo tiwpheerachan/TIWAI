@@ -1,7 +1,7 @@
 :root{
-  --bg0:#f6f9ff;
-  --bg1:#f2fbff;
-  --bg2:#f7fff9;
+  --bg0:#ffffff;
+  --bg1:#ffffff;
+  --bg2:rgb(247, 255, 249);
 
   --card: rgba(255,255,255,.72);
   --card2: rgba(255,255,255,.56);
@@ -14,10 +14,10 @@
   --primary:#2563eb;
   --primary2:#06b6d4;
 
-  --goodBg: rgba(16,185,129,.14);
-  --warnBg: rgba(245,158,11,.16);
+  --goodBg: rgba(255, 255, 255, 0.14);
+  --warnBg: rgba(255, 255, 255, 0.16);
 
-  --shadow: 0 18px 55px rgba(10,25,60,.12);
+  --shadow: 0 18px 55px rgba(255, 255, 255, 0.12);
   --shadow2: 0 10px 28px rgba(10,25,60,.10);
 
   --r: 18px;
@@ -38,9 +38,9 @@ body{
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, "Noto Sans Thai", sans-serif;
   color:var(--text);
   background:
-    radial-gradient(1200px 700px at 12% 10%, rgba(59,130,246,.18), transparent 55%),
-    radial-gradient(900px 600px at 90% 20%, rgba(168,85,247,.16), transparent 55%),
-    radial-gradient(1100px 700px at 55% 90%, rgba(255,209,102,.14), transparent 60%),
+    radial-gradient(1200px 700px at 12% 10%, rgb(255, 255, 255), transparent 55%),
+    radial-gradient(900px 600px at 90% 20%, rgb(255, 255, 255), transparent 55%),
+    radial-gradient(1100px 700px at 55% 90%, rgb(255, 255, 255), transparent 60%),
     var(--bg0);
 }
 
@@ -76,7 +76,7 @@ a{ color:inherit; }
 .drop.dropPhoto{
   position: relative;
   overflow: hidden;
-  background-image: url("https://i.pinimg.com/1200x/6d/c3/74/6dc37407e61aaba128c720dbd2a27773.jpg");
+  background-image: url("https://i.pinimg.com/736x/d3/ae/58/d3ae580d9ff7171ad0700d5be82d7632.jpg");
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -102,17 +102,17 @@ a{ color:inherit; }
 
 /* OPTIONAL: hover highlight still works */
 .drop.dropPhoto.isOver{
-  border-color: rgba(37,99,235,.45);
+  border-color: rgba(255, 255, 255, 0.45);
   transform: translateY(-1px);
 }
 
 /* ===== Backend URL card (polish) ===== */
 .backendCard{
   background:
-    radial-gradient(600px 220px at 10% 0%, rgba(255, 255, 255, 0.147), transparent 55%),
-    radial-gradient(520px 220px at 95% 15%, rgba(255, 255, 255, 0.16), transparent 55%),
+    radial-gradient(600px 220px at 10% 0%, rgb(255, 255, 255), transparent 55%),
+    radial-gradient(520px 220px at 95% 15%, rgb(255, 255, 255), transparent 55%),
     rgba(255,255,255,.58);
-  border: 1px solid rgba(20,40,90,.10);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: var(--r);
 }
 
@@ -152,7 +152,7 @@ a{ color:inherit; }
   padding: 11px 12px;
   border-radius: 14px;
   border: 1px solid rgba(20,40,90,.14);
-  background: rgba(255,255,255,.78);
+  background: rgba(255, 255, 255, 0.78);
   outline: none;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.65);
   transition: box-shadow .15s ease, border-color .15s ease, transform .12s ease;
@@ -243,9 +243,9 @@ select.inputLike{
   padding: 10px 10px;
   border-radius: var(--r2);
   background:
-    linear-gradient(135deg, rgba(255,255,255,.55), rgba(255,255,255,.35)),
-    linear-gradient(135deg, rgba(59,130,246,.14), rgba(168,85,247,.10));
-  border: 1px solid rgba(59,130,246,.18);
+    linear-gradient(135deg, rgba(255, 233, 65, 0.683), rgba(237, 255, 73, 0.737)),
+    linear-gradient(135deg, rgb(194 210 238), rgb(194 210 238));
+  border: 1px solid rgba(0, 174, 159, 0);
   position: relative;
   overflow: hidden;
 }
@@ -899,7 +899,7 @@ table.excel tbody tr.review:hover td{ background: rgba(245,158,11,.14); }
 .backendSnow .field label{
   font-size: 12px;
   font-weight: 500;       /* ✅ ลดความหนา */
-  color: rgba(11,23,51,.65);
+  color: rgb(54, 115, 255);
 }
 
 /* dropdown text */
@@ -947,7 +947,7 @@ table.excel tbody tr.review:hover td{ background: rgba(245,158,11,.14); }
   content:"";
   position:absolute;
   inset:0;
-  background: radial-gradient(700px 240px at 20% 0%, rgba(59,130,246,.08), transparent 55%);
+  background: radial-gradient(700px 240px at 20% 0%, rgb(255, 255, 255), transparent 55%);
   pointer-events:none;
   z-index: 1;
 }
@@ -1022,7 +1022,7 @@ table.excel tbody tr.review:hover td{ background: rgba(245,158,11,.14); }
   font-size: 15px;                   /* ✅ เล็กลง */
   line-height: 1;
   opacity: .45;                      /* ✅ จางลง */
-  color: rgba(35, 182, 255, 0.789);       /* ✅ ฟ้าอ่อน */
+  color: rgba(10, 132, 255, 0.852);       /* ✅ ฟ้าอ่อน */
   filter: drop-shadow(0 6px 14px rgba(59,130,246,.10));
   will-change: transform;
   animation: snow-fall linear infinite;
@@ -1107,4 +1107,331 @@ table.excel tbody tr.review:hover td{ background: rgba(245,158,11,.14); }
 @media (prefers-reduced-motion: reduce){
   .flake{ animation: none; opacity:.35; }
   .snowflake{ animation: none; opacity:.25; }
+}
+
+/* ================================
+   Backend URL – Glass Pastel Style
+   ================================ */
+
+.backendCard{
+  padding: 14px 14px 12px;
+  border-radius: var(--r2);
+  background:
+    linear-gradient(
+      135deg,
+      rgb(255, 190, 150),
+      rgb(160, 211, 255)
+    );
+  border: 1px solid rgba(20, 40, 90, 0);
+  box-shadow: var(--shadow2);
+}
+
+/* ---------- header ---------- */
+
+.backendHeader{
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.backendHeader::-webkit-details-marker{ display:none; }
+
+.backendTitleWrap{
+  flex: 1;
+  min-width: 0;
+}
+
+.backendTitle{
+  font-size: 15px;
+  font-weight: 1000;
+  color: #ffffff;
+  letter-spacing: -.01em;
+}
+
+.backendSub{
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(11,23,51,.6);
+  margin-top: 2px;
+}
+
+/* underline accent */
+.backendUnderline{
+  margin-top: 8px;
+  height: 3px;
+  width: 100%;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      90deg,
+      #ff9f70,
+      #ffd36b,
+      #6be3ff,
+      #8b7cff
+    );
+  opacity: .9;
+}
+
+/* toggle button */
+.backendToggle{
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: rgba(255,255,255,.85);
+  border: 1px solid rgba(20,40,90,.14);
+  box-shadow: 0 10px 22px rgba(10,25,60,.12);
+}
+
+.backendToggle .chev{
+  font-size: 14px;
+  font-weight: 900;
+  transition: transform .2s ease;
+}
+
+/* rotate when open */
+.backendCard[open] .chev{
+  transform: rotate(180deg);
+}
+
+/* ---------- body ---------- */
+
+.backendBody{
+  padding-top: 14px;
+}
+
+.backendCard:not([open]) .backendBody{
+  display: none;
+}
+
+/* input/select polish */
+.backendBody .field select,
+.backendBody .field input{
+  background: rgba(255,255,255,.9);
+  border: 1px solid rgba(20,40,90,.14);
+}
+
+/* mobile */
+@media (max-width: 520px){
+  .backendTitle{ font-size: 14px; }
+  .backendSub{ font-size: 10px; }
+}
+
+/* ================================
+   ✅ Settings (Pre-Upload Filter) Card
+   - background image only inside this card
+   - keep your existing ids/data-attrs for JS
+   ================================ */
+
+.settingsCard{
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r);
+  border: 1px solid rgba(20,40,90,.12);
+  background: rgba(255, 255, 255, 0);
+  box-shadow: var(--shadow2);
+}
+
+/* background image (เฉพาะการ์ดนี้) */
+.settingsCard.settingsPhoto{
+  background-image: url("https://i.pinimg.com/736x/2f/4e/42/2f4e4299cd135ad92c494b560f017c41.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* overlay ให้อ่านง่าย + glass glow */
+.settingsCard::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:
+    radial-gradient(900px 260px at 18% 0%, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0) 55%, rgba(255,255,255,.30)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0));
+  pointer-events:none;
+  z-index: 0;
+}
+
+.settingsCard > *{
+  position: relative;
+  z-index: 1;
+}
+
+/* layout */
+.settingsGrid{
+  display: grid;
+  gap: 12px;
+}
+
+.settingsGroup{
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.463);
+  background: rgba(255, 255, 255, 0.277);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.329);
+}
+
+.settingsDivider{
+  height: 1px;
+  background: rgba(255, 255, 255, 0.805);
+  margin: 2px 2px;
+}
+
+/* label row */
+.settingsLabelRow{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.settingsCard .field label,
+.settingsLabelRow label{
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.914);
+  font-weight: 900;
+}
+
+.miniPill{
+  font-size: 11px;
+  font-weight: 1000;
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.12);
+  background: rgba(255,255,255,.72);
+  color: rgba(11,23,51,.72);
+}
+
+/* chips: bigger + nicer */
+.chipsBig{
+  justify-content: flex-start;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.chipSpacer{
+  flex: 1 1 auto;
+}
+
+/* override chip look only inside settings card */
+.settingsCard .chip{
+  padding: 8px 11px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.14);
+  background: rgba(255,255,255,.72);
+  box-shadow: 0 10px 22px rgba(10,25,60,.06);
+  transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease, background .12s ease;
+}
+
+.settingsCard .chip:hover{
+  transform: translateY(-1px);
+  box-shadow: 0 14px 26px rgba(10,25,60,.10);
+}
+
+/* selected state (JS เดิมควร toggle class "active" อยู่แล้ว) */
+.settingsCard .chip.active{
+  border-color: rgb(242, 255, 2);
+  background: rgba(255, 255, 0, 0.979);
+}
+
+/* ghost buttons */
+.settingsCard .chip.ghost{
+  background: rgb(255, 255, 255);
+  border-style: dashed;
+  opacity: .95;
+}
+
+/* hints */
+.settingsHint{
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgb(255, 255, 255);
+}
+
+/* mobile: tighter + keep buttons visible */
+@media (max-width: 520px){
+  .settingsGroup{ padding: 9px; }
+  .settingsLabelRow{ align-items:flex-start; }
+  .settingsCard .chip{ padding: 8px 10px; }
+  .chipSpacer{ display:none; } /* ให้ All/Clear ต่อท้ายไปเลยบนมือถือ */
+}
+
+/* ================================
+   ✅ App Header Banner (GIF background)
+   ================================ */
+
+.appHeader{
+  position: relative;
+  height: 120px;
+  margin: 14px;
+  border-radius: 22px;
+  overflow: hidden;
+
+  background-image: url("https://i.pinimg.com/originals/22/04/90/220490938e3c9a8b7f1f2c90017da44f.gif");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+
+  border: 1px solid rgba(20,40,90,.12);
+  box-shadow: 0 20px 60px rgba(10,25,60,.18);
+}
+
+/* glass overlay */
+.appHeaderOverlay{
+  position:absolute;
+  inset:0;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255,255,255,.55),
+      rgba(255,255,255,.25) 40%,
+      rgba(255,255,255,.65)
+    );
+  backdrop-filter: blur(6px);
+  z-index: 1;
+}
+
+/* content */
+.appHeaderContent{
+  position: relative;
+  z-index: 2;
+  height: 100%;
+  display:flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align:center;
+  padding: 12px;
+}
+
+.appHeaderTitle{
+  font-size: 24px;
+  font-weight: 1100;
+  letter-spacing: -.02em;
+  color: #0b1733;
+  text-shadow: 0 6px 16px rgba(10,25,60,.25);
+}
+
+.appHeaderSub{
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(11,23,51,.75);
+}
+
+/* mobile */
+@media (max-width: 520px){
+  .appHeader{
+    height: 96px;
+    margin: 10px;
+  }
+  .appHeaderTitle{ font-size: 18px; }
+  .appHeaderSub{ font-size: 12px; }
 }
