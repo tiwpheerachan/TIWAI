@@ -1317,3 +1317,150 @@
     initSnow();
   });
 })();
+(function(){
+  // ---- Balloon FX ----
+  function launchBalloons(){
+    // กันยิงซ้ำรัว ๆ ในงานเดียว
+    const now = Date.now();
+    const last = Number(localStorage.getItem("_balloon_last") || "0");
+    if(now - last < 6000) return;
+    localStorage.setItem("_balloon_last", String(now));
+
+    // สร้าง layer
+    const layer = document.createElement("div");
+    layer.className = "balloonsLayer";
+    document.body.appendChild(layer);
+
+    // สร้างลูกโป่ง 3 ลูก
+    const lefts = [22, 52, 78];
+    const colors = [
+      "linear-gradient(180deg, rgba(140,210,255,.95), rgba(120,160,255,.85))",
+      "linear-gradient(180deg, rgba(190,255,210,.95), rgba(120,210,170,.85))",
+      "linear-gradient(180deg, rgba(255,200,230,.95), rgba(210,140,255,.85))"
+    ];
+
+    for(let i=0;i<3;i++){
+      const b = document.createElement("div");
+      b.className = "balloon";
+      b.style.left = lefts[i] + "%";
+      b.style.background = colors[i];
+      b.style.animationDelay = (i * 0.35) + "s"; // ขึ้นช้าไล่กันนิด ๆ
+      layer.appendChild(b);
+    }
+
+    // ลบหลัง 5.5 วิ (กันค้าง)
+    setTimeout(() => {
+      try{ layer.remove(); }catch(e){}
+    }, 5600);
+  }
+
+  function textLooksDone(s){
+    if(!s) return false;
+    const t = String(s).toLowerCase();
+    return (
+      t.includes("done") ||
+      t.includes("complete") ||
+      t.includes("finished") ||
+      t.includes("success") ||
+      t.includes("เสร็จ") ||
+      t.includes("สำเร็จ")
+    );
+  }
+(function(){
+  function launchBalloons(){
+    const layer = document.createElement("div");
+    layer.className = "balloonsLayer";
+    document.body.appendChild(layer);
+
+    const lefts = [24, 52, 78];
+    const colors = [
+      "linear-gradient(180deg, rgba(140,210,255,.95), rgba(120,160,255,.85))",
+      "linear-gradient(180deg, rgba(190,255,210,.95), rgba(120,210,170,.85))",
+      "linear-gradient(180deg, rgba(255,200,230,.95), rgba(210,140,255,.85))"
+    ];
+
+    for(let i=0;i<3;i++){
+      const b = document.createElement("div");
+      b.className = "balloon";
+      b.style.left = lefts[i] + "%";
+      b.style.background = colors[i];
+      b.style.animationDelay = (i * 0.35) + "s";
+      layer.appendChild(b);
+    }
+
+    setTimeout(()=>{ try{ layer.remove(); }catch(e){} }, 5600);
+  }
+
+  let firedForJob = ""; // กันยิงซ้ำ
+
+  function parseIntSafe(x){
+    const n = parseInt(String(x||"").replace(/[^\d]/g,""), 10);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function checkDone(){
+    const jobId = window.__lastJobId || ""; // ถ้าคุณมีเก็บ jobId ไว้
+    const inWork = parseIntSafe(document.getElementById("kpiInWork")?.textContent);
+    const ok = parseIntSafe(document.getElementById("kpiOk")?.textContent);
+    const review = parseIntSafe(document.getElementById("kpiReview")?.textContent);
+
+    // เงื่อนไข: กำลังทำ = 0 และมีผลลัพธ์อย่างน้อย 1 แถว
+    const done = (inWork === 0) && (ok + review > 0);
+
+    if(done){
+      const key = jobId || "nojob";
+      if(firedForJob !== key){
+        firedForJob = key;
+        launchBalloons();
+      }
+    }
+  }
+
+  // สังเกตการเปลี่ยนแปลงตัวเลข KPI
+  function wire(){
+    const ids = ["kpiInWork","kpiOk","kpiReview"];
+    const targets = ids.map(id => document.getElementById(id)).filter(Boolean);
+    if(!targets.length) return;
+
+    const obs = new MutationObserver(checkDone);
+    targets.forEach(el => obs.observe(el, { childList:true, subtree:true, characterData:true }));
+    setInterval(checkDone, 1200);
+  }
+
+  window.addEventListener("load", wire);
+})();
+
+  function pctLooksDone(s){
+    if(!s) return false;
+    const t = String(s).trim();
+    return t === "100%" || t.startsWith("100");
+  }
+
+  // เฝ้าดู state จาก UI เดิมของคุณ
+  function wireBalloonOnDone(){
+    const jobStateEl = document.getElementById("jobState");
+    const pctEl = document.getElementById("progressPct");
+    if(!jobStateEl && !pctEl) return;
+
+    const check = () => {
+      const st = jobStateEl ? jobStateEl.textContent : "";
+      const pct = pctEl ? pctEl.textContent : "";
+      if(textLooksDone(st) || pctLooksDone(pct)) {
+        launchBalloons();
+      }
+    };
+
+    // เรียกครั้งแรก (กรณี reload แล้วค้าง 100%)
+    check();
+
+    const obs = new MutationObserver(check);
+    if(jobStateEl) obs.observe(jobStateEl, { childList:true, subtree:true, characterData:true });
+    if(pctEl) obs.observe(pctEl, { childList:true, subtree:true, characterData:true });
+
+    // กันพลาด: เช็คซ้ำเป็นช่วง ๆ ตอนมีงาน
+    setInterval(check, 1200);
+  }
+
+  window.addEventListener("load", wireBalloonOnDone);
+})();
+

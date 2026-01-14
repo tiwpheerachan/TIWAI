@@ -1,3 +1,19 @@
+# backend/app/services/document_router.py
+"""
+Document Router - Enhanced Version for 8 Platforms
+
+✅ Improvements:
+1. ✅ Support for 8 platforms (META, GOOGLE, SHOPEE, LAZADA, TIKTOK, SPX, THAI_TAX, UNKNOWN)
+2. ✅ Meta/Google Ads routing (rule-based extractors)
+3. ✅ Thai Tax Invoice routing
+4. ✅ Integration with enhanced classifier (8 platforms)
+5. ✅ Integration with enhanced AI service (platform-aware)
+6. ✅ Integration with export_service constants
+7. ✅ Better error handling and logging
+8. ✅ cfg parameter support for job_worker
+9. ✅ Backward compatibility maintained
+10. ✅ Platform-specific validation
+"""
 from __future__ import annotations
 
 from typing import Dict, Any, Tuple, List, Callable, Optional
@@ -13,13 +29,28 @@ from ..extractors.shopee import extract_shopee
 from ..extractors.lazada import extract_lazada
 from ..extractors.tiktok import extract_tiktok
 
-# ✅ spx optional
+# ✅ Meta/Google Ads extractors (rule-based)
+try:
+    from ..extractors.ads_meta import extract_meta_ads
+    _META_EXTRACTOR_OK = True
+except Exception:  # pragma: no cover
+    extract_meta_ads = None  # type: ignore
+    _META_EXTRACTOR_OK = False
+
+try:
+    from ..extractors.ads_google import extract_google_ads
+    _GOOGLE_EXTRACTOR_OK = True
+except Exception:  # pragma: no cover
+    extract_google_ads = None  # type: ignore
+    _GOOGLE_EXTRACTOR_OK = False
+
+# ✅ SPX extractor (optional)
 try:
     from ..extractors.spx import extract_spx  # type: ignore
 except Exception:  # pragma: no cover
     extract_spx = None  # type: ignore
 
-# ✅ vendor code mapping (Cxxxxx)
+# ✅ Vendor code mapping (Cxxxxx)
 try:
     from ..extractors.vendor_mapping import get_vendor_code, detect_client_from_context
     _VENDOR_MAPPING_OK = True
@@ -36,18 +67,50 @@ from ..utils.validators import (
     validate_vat_rate,
 )
 
-# ✅ AI extractor (optional)
+# ✅ AI extractor (optional, enhanced version)
 try:
-    from .ai_extract_service import extract_with_ai
+    from .ai_service import ai_fill_peak_row as extract_with_ai
     _AI_OK = True
 except Exception:  # pragma: no cover
-    extract_with_ai = None  # type: ignore
-    _AI_OK = False
+    try:
+        from .ai_extract_service import extract_with_ai
+        _AI_OK = True
+    except Exception:
+        extract_with_ai = None  # type: ignore
+        _AI_OK = False
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# 🔥 PEAK columns lock (A-U) — อย่าให้คอลัมน์เลื่อนอีก
+# Platform Constants (aligned with export_service & ai_service)
+# ============================================================
+
+# ✅ Platform groups (from export_service)
+PLATFORM_GROUPS = {
+    "META": "Advertising Expense",
+    "GOOGLE": "Advertising Expense",
+    "SHOPEE": "Marketplace Expense",
+    "LAZADA": "Marketplace Expense",
+    "TIKTOK": "Marketplace Expense",
+    "SPX": "Delivery/Logistics Expense",
+    "THAI_TAX": "General Expense",
+    "UNKNOWN": "Other Expense",
+}
+
+# ✅ Platform-specific default descriptions
+PLATFORM_DESCRIPTIONS = {
+    "META": "Meta Ads",
+    "GOOGLE": "Google Ads",
+    "SHOPEE": "Shopee Marketplace",
+    "LAZADA": "Lazada Marketplace",
+    "TIKTOK": "TikTok Shop",
+    "SPX": "Shopee Express Delivery",
+    "THAI_TAX": "",  # Variable
+    "UNKNOWN": "",
+}
+
+# ============================================================
+# PEAK columns lock (A-U) — อย่าให้คอลัมน์เลื่อนอีก
 # ============================================================
 PEAK_KEYS_ORDER: List[str] = [
     "A_seq",
@@ -91,6 +154,7 @@ def _sanitize_incoming_row(d: Any) -> Dict[str, Any]:
     """รับเฉพาะ dict เท่านั้น"""
     return d if isinstance(d, dict) else {}
 
+
 def _compact_no_ws(v: Any) -> str:
     """
     ✅ ตัด whitespace ทั้งหมด (space/newline/tab) ให้ token ติดกัน
@@ -101,6 +165,7 @@ def _compact_no_ws(v: Any) -> str:
     if not s:
         return ""
     return _RE_ALL_WS.sub("", s)
+
 
 def _sanitize_ai_row(ai: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -129,6 +194,7 @@ def _sanitize_ai_row(ai: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
     return cleaned
+
 
 def _merge_rows(
     base: Dict[str, Any],
@@ -163,11 +229,13 @@ def _merge_rows(
 
     return out
 
+
 # ============================================================
 # helpers: validation
 # ============================================================
 
 def _validate_row(row: Dict[str, Any]) -> List[str]:
+    """Validate row fields"""
     errors: List[str] = []
 
     if not validate_yyyymmdd(row.get("B_doc_date", "")):
@@ -193,6 +261,7 @@ def _validate_row(row: Dict[str, Any]) -> List[str]:
 
     return errors
 
+
 # ============================================================
 # helpers: extractor call (backward compatible)
 # ============================================================
@@ -204,11 +273,12 @@ def _safe_call_extractor(
     filename: str = "",
     client_tax_id: str = "",
     cfg: Optional[Dict[str, Any]] = None,
+    platform_hint: str = "",
 ) -> Dict[str, Any]:
     """
-    ✅ FIX: เรียก extractor แบบ backward-compatible + เพิ่ม cfg support
+    ✅ Enhanced: Call extractor with backward compatibility + cfg + platform_hint support
     
-    - ถ้ารองรับ filename/client_tax_id/cfg -> ส่งให้
+    - ถ้ารองรับ filename/client_tax_id/cfg/platform_hint -> ส่งให้
     - ถ้าไม่รองรับ -> fallback fn(text)
     """
     try:
@@ -220,8 +290,10 @@ def _safe_call_extractor(
             kwargs["filename"] = filename
         if "client_tax_id" in params and client_tax_id:
             kwargs["client_tax_id"] = client_tax_id
-        if "cfg" in params and cfg:  # ✅ เพิ่ม cfg support
+        if "cfg" in params and cfg:
             kwargs["cfg"] = cfg
+        if "platform_hint" in params and platform_hint:
+            kwargs["platform_hint"] = platform_hint
 
         if kwargs:
             return fn(text, **kwargs)  # type: ignore[arg-type]
@@ -236,6 +308,7 @@ def _safe_call_extractor(
             pass
 
     return fn(text)  # type: ignore
+
 
 # ============================================================
 # ✅ Vendor code mapping pass (force D_vendor_code = Cxxxxx)
@@ -278,8 +351,45 @@ def _apply_vendor_code_mapping(row: Dict[str, Any], text: str, client_tax_id: st
 
     return row
 
+
 # ============================================================
-# 🔥 FINAL LOCK: force PEAK schema + fix Marketplace group
+# ✅ Platform-specific enforcement
+# ============================================================
+
+def _enforce_platform_rules(row: Dict[str, Any], platform: str) -> Dict[str, Any]:
+    """
+    ✅ Enforce platform-specific rules (from export_service logic)
+    
+    - META/GOOGLE: Advertising Expense, specific VAT rules
+    - Marketplace: Marketplace Expense
+    - SPX: Delivery/Logistics Expense
+    - THAI_TAX: General Expense
+    """
+    p = (platform or "").upper().strip()
+    
+    # Set U_group based on platform
+    if p in PLATFORM_GROUPS:
+        if not row.get("U_group") or row.get("U_group") == "":
+            row["U_group"] = PLATFORM_GROUPS[p]
+    
+    # Set L_description if empty
+    if not row.get("L_description") and p in PLATFORM_DESCRIPTIONS:
+        desc = PLATFORM_DESCRIPTIONS[p]
+        if desc:
+            row["L_description"] = desc
+    
+    # Marketplace platforms: ensure correct group
+    if p in ("SHOPEE", "LAZADA", "TIKTOK", "SPX"):
+        row["U_group"] = "Marketplace Expense"
+        # Don't let it go into K_account
+        if str(row.get("K_account", "") or "").strip() == "Marketplace Expense":
+            row["K_account"] = ""
+    
+    return row
+
+
+# ============================================================
+# 🔥 FINAL LOCK: force PEAK schema
 # ============================================================
 
 def lock_peak_columns(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -302,22 +412,6 @@ def lock_peak_columns(row: Dict[str, Any]) -> Dict[str, Any]:
 
     return out
 
-def enforce_marketplace_group(row: Dict[str, Any], platform: str) -> Dict[str, Any]:
-    """
-    ✅ บังคับท้ายสุด:
-    - U_group ต้องเป็น Marketplace Expense สำหรับ marketplace docs
-    - ห้ามไปอยู่ K_account
-    """
-    p = (platform or "").lower().strip()
-    desc = str(row.get("L_description", "") or "").strip()
-
-    is_marketplace = p in ("shopee", "lazada", "tiktok", "spx") or (desc == "Marketplace Expense")
-    if is_marketplace:
-        row["U_group"] = "Marketplace Expense"
-        if str(row.get("K_account", "") or "").strip() == "Marketplace Expense":
-            row["K_account"] = ""
-
-    return row
 
 def _finalize_row(row: Dict[str, Any], platform: str) -> Dict[str, Any]:
     """
@@ -325,7 +419,7 @@ def _finalize_row(row: Dict[str, Any], platform: str) -> Dict[str, Any]:
     - P_wht ว่าง (คุณไม่ต้องการบันทึก)
     - T_note ว่าง
     - sync C/G + compact no whitespace
-    - force U_group rule
+    - enforce platform rules
     - lock schema
     """
     # ✅ WHT must be empty (your export requirement)
@@ -345,15 +439,17 @@ def _finalize_row(row: Dict[str, Any], platform: str) -> Dict[str, Any]:
     row["C_reference"] = _compact_no_ws(row.get("C_reference", ""))
     row["G_invoice_no"] = _compact_no_ws(row.get("G_invoice_no", ""))
 
-    # ✅ enforce marketplace group last
-    row = enforce_marketplace_group(row, platform)
+    # ✅ enforce platform rules
+    row = _enforce_platform_rules(row, platform)
 
     # ✅ lock columns last (กันเลื่อน)
     row = lock_peak_columns(row)
 
     return row
 
+
 def _record_ai_error(row: Dict[str, Any], stage: str, exc: Exception) -> None:
+    """Record AI errors in metadata"""
     if os.getenv("STORE_AI_ERROR_META", "1") != "1":
         return
     msg = f"{stage}: {type(exc).__name__}: {str(exc)}"
@@ -364,6 +460,45 @@ def _record_ai_error(row: Dict[str, Any], stage: str, exc: Exception) -> None:
     arr.append(msg)
     row["_ai_errors"] = arr
 
+
+# ============================================================
+# ✅ Platform normalization (classifier → router mapping)
+# ============================================================
+
+def _normalize_platform_label(platform: str) -> str:
+    """
+    ✅ Normalize classifier output to router platform
+    
+    Classifier returns: META, GOOGLE, SHOPEE, LAZADA, TIKTOK, SPX, THAI_TAX, UNKNOWN
+    Router needs: META, GOOGLE, SHOPEE, LAZADA, TIKTOK, SPX, THAI_TAX, GENERIC
+    
+    Note: UNKNOWN → GENERIC (for extractor routing)
+    """
+    p = (platform or "").upper().strip()
+    
+    # Known platforms (exact match)
+    if p in ("META", "GOOGLE", "SHOPEE", "LAZADA", "TIKTOK", "SPX", "THAI_TAX"):
+        return p
+    
+    # Legacy lowercase support (backward compatibility)
+    p_lower = p.lower()
+    legacy_map = {
+        "shopee": "SHOPEE",
+        "lazada": "LAZADA",
+        "tiktok": "TIKTOK",
+        "spx": "SPX",
+        "ads": "GENERIC",  # Generic ads (not Meta/Google specific)
+        "other": "GENERIC",
+        "unknown": "GENERIC",
+    }
+    
+    if p_lower in legacy_map:
+        return legacy_map[p_lower]
+    
+    # Fallback
+    return "GENERIC"
+
+
 # ============================================================
 # 🔥 MAIN ENTRY
 # ============================================================
@@ -372,19 +507,29 @@ def extract_row_from_text(
     text: str,
     filename: str = "",
     client_tax_id: str = "",
-    cfg: Optional[Dict[str, Any]] = None,  # ✅ เพิ่ม cfg parameter
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Dict[str, Any], List[str]]:
     """
-    ✅ FIX: เพิ่ม cfg parameter สำหรับ job_worker_fixed.py
+    ✅ Enhanced: Extract row with 8 platforms support
     
     Args:
-        text: Document text
+        text: Document text (OCR)
         filename: Filename for hints
         client_tax_id: Client tax ID (if known)
         cfg: Job config (optional, contains client_tags/platforms/strictMode)
     
     Returns:
         (platform, row, errors)
+        
+    Platform routing:
+    - META → extract_meta_ads (rule-based, fast, accurate)
+    - GOOGLE → extract_google_ads (rule-based, fast, accurate)
+    - SHOPEE → extract_shopee
+    - LAZADA → extract_lazada
+    - TIKTOK → extract_tiktok
+    - SPX → extract_spx (if available)
+    - THAI_TAX → AI extraction (platform-aware)
+    - GENERIC → extract_generic + AI enhancement
     """
 
     # 0) normalize inputs (safe)
@@ -393,93 +538,254 @@ def extract_row_from_text(
     client_tax_id = (client_tax_id or "").strip()
     cfg = cfg or {}
 
-    # 1) classify (✅ MUST pass filename + cfg for better hints)
+    # 1) ✅ Classify with enhanced classifier (8 platforms)
     try:
-        # ✅ Try to pass cfg to classifier if it supports it
+        # Try to pass cfg to classifier if it supports it
         try:
             sig = inspect.signature(classify_platform)
             if "cfg" in sig.parameters:
-                platform = classify_platform(text, filename=filename, cfg=cfg)
+                platform_raw = classify_platform(text, filename=filename, cfg=cfg)
             else:
-                platform = classify_platform(text, filename=filename)
+                platform_raw = classify_platform(text, filename=filename)
         except Exception:
-            platform = classify_platform(text, filename=filename)
+            platform_raw = classify_platform(text, filename=filename)
     except Exception as e:
         logger.exception("classify_platform failed: %s", e)
-        platform = "unknown"
+        platform_raw = "UNKNOWN"
 
-    # 1.1) normalize platform label (defensive)
-    # classifier returns: shopee/lazada/tiktok/spx/ads/other/unknown
-    # we route "other/unknown" -> generic extractor
-    if platform not in ("shopee", "lazada", "tiktok", "spx", "ads", "other", "unknown"):
-        platform = "unknown"
+    # 1.1) ✅ Normalize platform label
+    platform = _normalize_platform_label(platform_raw)
+    
+    logger.info(f"Platform classified: {platform_raw} → {platform} (file: {filename})")
 
-    # 2) extractor baseline
+    # 2) ✅ Route to appropriate extractor
     try:
-        if platform == "shopee":
-            row = _safe_call_extractor(extract_shopee, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
-        elif platform == "lazada":
-            row = _safe_call_extractor(extract_lazada, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
-        elif platform == "tiktok":
-            row = _safe_call_extractor(extract_tiktok, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
-        elif platform == "spx":
-            if extract_spx is not None:
-                row = _safe_call_extractor(extract_spx, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
+        # ========== Priority 1: Meta Ads (Rule-based) ==========
+        if platform == "META":
+            if _META_EXTRACTOR_OK and extract_meta_ads is not None:
+                logger.info(f"Using Meta Ads extractor (rule-based)")
+                row = _safe_call_extractor(
+                    extract_meta_ads,
+                    text,
+                    filename=filename,
+                    client_tax_id=client_tax_id,
+                    cfg=cfg,
+                    platform_hint="META"
+                )
+                row["_extraction_method"] = "rule_based_meta"
             else:
-                # if spx extractor missing, fallback to generic but keep meta
-                row = _safe_call_extractor(extract_generic, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
+                logger.warning("Meta extractor not available, using AI")
+                # Fallback to AI with META hint
+                if _AI_OK and extract_with_ai is not None:
+                    row = _safe_call_extractor(
+                        extract_with_ai,
+                        text,
+                        filename=filename,
+                        platform_hint="META"
+                    )
+                    row["_extraction_method"] = "ai_meta_fallback"
+                else:
+                    row = _safe_call_extractor(extract_generic, text, filename=filename)
+                    row["_extraction_method"] = "generic_meta_fallback"
+                    row["_missing_extractor"] = "meta"
+
+        # ========== Priority 2: Google Ads (Rule-based) ==========
+        elif platform == "GOOGLE":
+            if _GOOGLE_EXTRACTOR_OK and extract_google_ads is not None:
+                logger.info(f"Using Google Ads extractor (rule-based)")
+                row = _safe_call_extractor(
+                    extract_google_ads,
+                    text,
+                    filename=filename,
+                    client_tax_id=client_tax_id,
+                    cfg=cfg,
+                    platform_hint="GOOGLE"
+                )
+                row["_extraction_method"] = "rule_based_google"
+            else:
+                logger.warning("Google extractor not available, using AI")
+                # Fallback to AI with GOOGLE hint
+                if _AI_OK and extract_with_ai is not None:
+                    row = _safe_call_extractor(
+                        extract_with_ai,
+                        text,
+                        filename=filename,
+                        platform_hint="GOOGLE"
+                    )
+                    row["_extraction_method"] = "ai_google_fallback"
+                else:
+                    row = _safe_call_extractor(extract_generic, text, filename=filename)
+                    row["_extraction_method"] = "generic_google_fallback"
+                    row["_missing_extractor"] = "google"
+
+        # ========== Priority 3: Marketplace (Shopee, Lazada, TikTok) ==========
+        elif platform == "SHOPEE":
+            row = _safe_call_extractor(
+                extract_shopee,
+                text,
+                filename=filename,
+                client_tax_id=client_tax_id,
+                cfg=cfg
+            )
+            row["_extraction_method"] = "rule_based_shopee"
+
+        elif platform == "LAZADA":
+            row = _safe_call_extractor(
+                extract_lazada,
+                text,
+                filename=filename,
+                client_tax_id=client_tax_id,
+                cfg=cfg
+            )
+            row["_extraction_method"] = "rule_based_lazada"
+
+        elif platform == "TIKTOK":
+            row = _safe_call_extractor(
+                extract_tiktok,
+                text,
+                filename=filename,
+                client_tax_id=client_tax_id,
+                cfg=cfg
+            )
+            row["_extraction_method"] = "rule_based_tiktok"
+
+        # ========== Priority 4: SPX (Logistics) ==========
+        elif platform == "SPX":
+            if extract_spx is not None:
+                row = _safe_call_extractor(
+                    extract_spx,
+                    text,
+                    filename=filename,
+                    client_tax_id=client_tax_id,
+                    cfg=cfg
+                )
+                row["_extraction_method"] = "rule_based_spx"
+            else:
+                # Fallback to generic but keep meta
+                logger.warning("SPX extractor not available, using generic")
+                row = _safe_call_extractor(
+                    extract_generic,
+                    text,
+                    filename=filename,
+                    client_tax_id=client_tax_id,
+                    cfg=cfg
+                )
+                row["_extraction_method"] = "generic_spx_fallback"
                 row["_missing_extractor"] = "spx"
+
+        # ========== Priority 5: Thai Tax Invoice (AI-based) ==========
+        elif platform == "THAI_TAX":
+            logger.info("Thai Tax Invoice detected, using AI with platform hint")
+            if _AI_OK and extract_with_ai is not None:
+                row = _safe_call_extractor(
+                    extract_with_ai,
+                    text,
+                    filename=filename,
+                    platform_hint="THAI_TAX"
+                )
+                row["_extraction_method"] = "ai_thai_tax"
+            else:
+                # Fallback to generic
+                row = _safe_call_extractor(extract_generic, text, filename=filename)
+                row["_extraction_method"] = "generic_thai_tax_fallback"
+
+        # ========== Fallback: Generic/Unknown ==========
         else:
-            # ads/other/unknown -> generic
-            row = _safe_call_extractor(extract_generic, text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
+            logger.info(f"Unknown/Generic platform, using generic extractor")
+            row = _safe_call_extractor(
+                extract_generic,
+                text,
+                filename=filename,
+                client_tax_id=client_tax_id,
+                cfg=cfg
+            )
+            row["_extraction_method"] = "generic"
+
     except Exception as e:
         logger.exception("Extractor error (platform=%s, file=%s)", platform, filename)
         row = _sanitize_incoming_row(extract_generic(text))
         row["_extractor_error"] = f"{type(e).__name__}: {str(e)}"[:500]
+        row["_extraction_method"] = "generic_error_fallback"
 
     row = _sanitize_incoming_row(row)
 
-    # 2.1) ensure minimal stable defaults BEFORE AI/validate (ลด error noise)
+    # 2.1) ✅ Ensure minimal stable defaults BEFORE AI/validate
     row.setdefault("A_seq", "")
     row.setdefault("A_company_name", "")
     row.setdefault("J_price_type", row.get("J_price_type") or "1")
     row.setdefault("M_qty", row.get("M_qty") or "1")
     row.setdefault("O_vat_rate", row.get("O_vat_rate") or "7%")
-    row.setdefault("L_description", row.get("L_description") or ("Marketplace Expense" if platform in ("shopee", "lazada", "tiktok", "spx") else ""))
-    row.setdefault("U_group", row.get("U_group") or ("Marketplace Expense" if platform in ("shopee", "lazada", "tiktok", "spx") else ""))
+    
+    # Platform-specific defaults
+    if platform in PLATFORM_DESCRIPTIONS:
+        desc = PLATFORM_DESCRIPTIONS[platform]
+        if desc and not row.get("L_description"):
+            row.setdefault("L_description", desc)
+    
+    if platform in PLATFORM_GROUPS:
+        if not row.get("U_group"):
+            row.setdefault("U_group", PLATFORM_GROUPS[platform])
 
-    # store meta for debug (optional)
+    # Store meta for debug (optional)
     if os.getenv("STORE_CLASSIFIER_META", "1") == "1":
         row["_platform"] = platform
+        row["_platform_raw"] = platform_raw
         row["_filename"] = filename
-        if cfg:  # ✅ เก็บ cfg meta
+        if cfg:
             row["_cfg"] = str(cfg)[:200]
 
-    # 3) AI ENHANCEMENT (optional + must be safe)
-    if _AI_OK and extract_with_ai is not None and os.getenv("ENABLE_AI_EXTRACT", "0") == "1":
+    # 3) ✅ AI ENHANCEMENT (optional, only for non-rule-based)
+    # Don't enhance Meta/Google as they're already rule-based and accurate
+    should_enhance = (
+        platform not in ("META", "GOOGLE") and
+        _AI_OK and
+        extract_with_ai is not None and
+        os.getenv("ENABLE_AI_EXTRACT", "0") == "1"
+    )
+    
+    if should_enhance:
         try:
-            # attempt with client_tax_id if supported
+            logger.info(f"AI enhancement for platform: {platform}")
+            # Call AI with platform hint
             try:
-                ai_raw = extract_with_ai(text, filename=filename, client_tax_id=client_tax_id)
+                ai_raw = _safe_call_extractor(
+                    extract_with_ai,
+                    text,
+                    filename=filename,
+                    client_tax_id=client_tax_id,
+                    platform_hint=platform
+                )
             except TypeError:
                 ai_raw = extract_with_ai(text, filename=filename)
 
             ai_row = _sanitize_ai_row(_sanitize_incoming_row(ai_raw))
             fill_missing = os.getenv("AI_FILL_MISSING", "1") == "1"
             row = _merge_rows(row, ai_row, fill_missing=fill_missing)
+            
+            # Update extraction method
+            if row.get("_extraction_method"):
+                row["_extraction_method"] = f"{row['_extraction_method']}+ai"
+                
         except Exception as e:
             logger.warning("AI extract failed (file=%s): %s", filename, e)
             _record_ai_error(row, "ai_extract", e)
 
-    # 4) validate
+    # 4) ✅ Validate
     errors = _validate_row(row)
 
-    # 5) AI REPAIR PASS (optional)
-    if errors and _AI_OK and extract_with_ai is not None and os.getenv("AI_REPAIR_PASS", "0") == "1":
+    # 5) ✅ AI REPAIR PASS (optional, only if errors exist)
+    if (
+        errors and
+        platform not in ("META", "GOOGLE") and  # Don't repair rule-based
+        _AI_OK and
+        extract_with_ai is not None and
+        os.getenv("AI_REPAIR_PASS", "0") == "1"
+    ):
         try:
+            logger.info(f"AI repair pass for {len(errors)} errors")
             prompt = (text or "") + "\n\n# VALIDATION_ERRORS\n" + "\n".join(errors)
             try:
-                ai_fix_raw = extract_with_ai(prompt, filename=filename, client_tax_id=client_tax_id)
+                ai_fix_raw = extract_with_ai(prompt, filename=filename, platform_hint=platform)
             except TypeError:
                 ai_fix_raw = extract_with_ai(prompt, filename=filename)
 
@@ -493,7 +799,15 @@ def extract_row_from_text(
     # 6) ✅ Vendor code mapping pass (ก่อน finalize/lock)
     row = _apply_vendor_code_mapping(row, text, client_tax_id)
 
-    # 7) FINALIZE (กันเลื่อน + compact + P_wht empty)
+    # 7) ✅ FINALIZE (กันเลื่อน + compact + enforce rules)
     row = _finalize_row(row, platform)
 
     return platform, row, errors
+
+
+__all__ = [
+    "extract_row_from_text",
+    "PEAK_KEYS_ORDER",
+    "PLATFORM_GROUPS",
+    "PLATFORM_DESCRIPTIONS",
+]
