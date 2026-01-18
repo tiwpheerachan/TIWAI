@@ -26,7 +26,7 @@
       </div>
 
       <!-- ✅ Backend URL (Redesigned / Collapsible) -->
-      <details class="card backendCard" id="backendDrop">
+      <details class="card backendCard backendSnow" id="backendDrop">
         <summary class="backendHeader">
           <div class="backendTitleWrap">
             <div class="backendTitle">Backend URL</div>
@@ -60,6 +60,9 @@
           </div>
         </div>
       </details>
+
+      <!-- ✅ Optional: แสดงรายละเอียด pre-filter (ถ้าคุณเรียก showFilterDetails(details)) -->
+      <div id="filterDetails" style="display:none"></div>
 
       <div class="card settingsCard settingsPhoto">
         <div class="settingsGrid">
@@ -96,6 +99,20 @@
               <button type="button" class="chip ghost" id="btnPlatformClear">Clear</button>
             </div>
           </div>
+
+          <!-- ✅ Optional: strict mode toggle (ถ้าต้องการจริง ๆ)
+          <div class="settingsDivider"></div>
+          <div class="settingsGroup">
+            <div class="settingsLabelRow">
+              <label>Strict mode (ไฟล์เดาไม่ได้ = ข้าม)</label>
+            </div>
+            <label class="switchRow">
+              <input id="strictMode" type="checkbox" />
+              <span class="switchUI"></span>
+              <span class="muted small">เปิดแล้วจะ “ข้าม” ไฟล์ที่เดา client/platform ไม่ได้</span>
+            </label>
+          </div>
+          -->
         </div>
       </div>
 
@@ -192,22 +209,21 @@
     <main class="main">
       <div class="topbar">
         <!-- ✅ sky decor layer (clouds + sun + birds + underline) -->
-<div class="skyDecor" aria-hidden="true">
-  <div class="sun"></div>
+        <div class="skyDecor" aria-hidden="true">
+          <div class="sun"></div>
 
-  <div class="cloud c1"></div>
-  <div class="cloud c2"></div>
-  <div class="cloud c3"></div>
+          <div class="cloud c1"></div>
+          <div class="cloud c2"></div>
+          <div class="cloud c3"></div>
 
-  <div class="bird f1"></div>
-  <div class="bird f2"></div>
-  <div class="bird f3"></div>
-  <div class="bird f4"></div>
-  <div class="bird f5"></div>
-</div>
-
-        <div>
+          <div class="bird f1"></div>
+          <div class="bird f2"></div>
+          <div class="bird f3"></div>
+          <div class="bird f4"></div>
+          <div class="bird f5"></div>
         </div>
+
+        <div></div>
 
         <div class="actions">
           <button id="btnEdit" class="btn">แก้ไข</button>
@@ -240,6 +256,12 @@
             <thead id="thead"></thead>
             <tbody id="tbody"></tbody>
           </table>
+        </div>
+
+        <!-- ✅ Horizontal scroll dock (ต้องมีให้ bindHScrollSync() ทำงาน) -->
+        <div class="hScrollDock" id="hScrollDock" style="display:none">
+          <div class="hScrollBar" id="hScrollBar">
+          </div>
         </div>
 
         <div class="hintbar small muted">

@@ -1,6 +1,6 @@
 # backend/app/services/job_service.py
 """
-Job Service - Enhanced Version
+Job Service - Final Version (Fixed Circular Import)
 
 ✅ Enhancements:
 1. ✅ Support for 8 platforms (META, GOOGLE, SHOPEE, LAZADA, TIKTOK, SPX, THAI_TAX, UNKNOWN)
@@ -9,6 +9,7 @@ Job Service - Enhanced Version
 4. ✅ Enhanced summary (platform breakdown, extraction methods)
 5. ✅ Better metadata tracking
 6. ✅ Backward compatible with job_worker.py
+7. ✅ Fixed circular import (uses platform_constants.py + lazy import)
 """
 from __future__ import annotations
 
@@ -16,48 +17,18 @@ import uuid
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional, Tuple, Set
+from typing import Dict, Any, List, Optional, Tuple
 
-from .job_worker import process_job_files
+# ✅ Import from platform_constants (NO circular import!)
+from .platform_constants import (
+    VALID_PLATFORMS,
+    PLATFORM_GROUPS,
+    LEGACY_PLATFORM_MAP,
+    normalize_platform as _norm_platform,
+)
 
-# ============================================================
-# Platform Constants (aligned with classifier/router/export)
-# ============================================================
-
-# ✅ Valid platforms (from classifier_enhanced.py)
-VALID_PLATFORMS: Set[str] = {
-    "META",
-    "GOOGLE",
-    "SHOPEE",
-    "LAZADA",
-    "TIKTOK",
-    "SPX",
-    "THAI_TAX",
-    "UNKNOWN",
-}
-
-# ✅ Platform groups (from export_service_final.py)
-PLATFORM_GROUPS = {
-    "META": "Advertising Expense",
-    "GOOGLE": "Advertising Expense",
-    "SHOPEE": "Marketplace Expense",
-    "LAZADA": "Marketplace Expense",
-    "TIKTOK": "Marketplace Expense",
-    "SPX": "Delivery/Logistics Expense",
-    "THAI_TAX": "General Expense",
-    "UNKNOWN": "Other Expense",
-}
-
-# ✅ Legacy platform mapping (backward compatibility)
-LEGACY_PLATFORM_MAP = {
-    "shopee": "SHOPEE",
-    "lazada": "LAZADA",
-    "tiktok": "TIKTOK",
-    "spx": "SPX",
-    "ads": "UNKNOWN",  # Generic ads (not specific)
-    "other": "UNKNOWN",
-    "unknown": "UNKNOWN",
-}
+# ✅ NO top-level import of job_worker (prevents circular import)
+# Instead, we use lazy import inside start_processing()
 
 # ============================================================
 # Helpers
@@ -72,37 +43,6 @@ def _utc_iso_z(dt: Optional[datetime] = None) -> str:
 def _norm_token(s: Any) -> str:
     """Normalize token to uppercase"""
     return str(s or "").strip().upper()
-
-
-def _norm_platform(p: Any) -> str:
-    """
-    ✅ Normalize platform to valid UPPERCASE platform
-    
-    Examples:
-    - "shopee" → "SHOPEE"
-    - "meta" → "META"
-    - "ads" → "UNKNOWN"
-    - "invalid" → "" (empty = invalid)
-    
-    Returns:
-        Valid platform or empty string
-    """
-    p_raw = str(p or "").strip()
-    if not p_raw:
-        return ""
-    
-    # Try uppercase first (exact match)
-    p_upper = p_raw.upper()
-    if p_upper in VALID_PLATFORMS:
-        return p_upper
-    
-    # Try legacy mapping
-    p_lower = p_raw.lower()
-    if p_lower in LEGACY_PLATFORM_MAP:
-        return LEGACY_PLATFORM_MAP[p_lower]
-    
-    # Invalid platform
-    return ""
 
 
 def _norm_list(xs: Any) -> List[str]:
@@ -136,17 +76,7 @@ def _norm_platforms(ps: Any) -> List[str]:
     """
     ✅ Normalize list of platforms to valid UPPERCASE platforms
     
-    Args:
-        ps: Single platform or list of platforms
-    
-    Returns:
-        List of valid platforms (empty = allow all)
-    
-    Examples:
-        ["shopee", "meta"] → ["SHOPEE", "META"]
-        "shopee,lazada" → ["SHOPEE", "LAZADA"]
-        ["invalid", "shopee"] → ["SHOPEE"]  # Skip invalid
-        [] → []  # Allow all
+    Uses shared normalize_platform from platform_constants
     """
     if not ps:
         return []
@@ -190,12 +120,6 @@ def _safe_cfg(cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
       - strictMode: bool (default False)
     
     Empty list = allow all
-    
-    Args:
-        cfg: Configuration dict
-    
-    Returns:
-        Normalized config with validated platforms
     """
     cfg = cfg or {}
     
@@ -217,7 +141,7 @@ def _safe_cfg(cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 class JobService:
     """
-    ✅ Enhanced Job Service
+    ✅ Enhanced Job Service (Fixed Circular Import)
     
     Features:
     - 8 platforms support with validation
@@ -225,15 +149,14 @@ class JobService:
     - Enhanced summary (platform breakdown)
     - Better metadata tracking
     - Backward compatible with job_worker.py
+    - No circular import (uses platform_constants.py + lazy import)
     """
 
     def __init__(self) -> None:
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._rows: Dict[str, List[Dict[str, Any]]] = {}
         self._lock = threading.RLock()
-
         self._threads: Dict[str, threading.Thread] = {}
-
         self._ttl_seconds: int = 0
 
     # -------------------------
@@ -241,22 +164,9 @@ class JobService:
     # -------------------------
 
     def create_job(self, cfg: Optional[Dict[str, Any]] = None) -> str:
-        """
-        Create new job
-        
-        Args:
-            cfg: Job configuration (optional)
-                - client_tags: List of client tags
-                - client_tax_ids: List of client tax IDs
-                - platforms: List of platforms (✅ validated)
-                - strictMode: Strict mode flag
-        
-        Returns:
-            job_id
-        """
+        """Create new job with validated config"""
         job_id = uuid.uuid4().hex
         now = _utc_iso_z()
-
         cfg_norm = _safe_cfg(cfg)
 
         with self._lock:
@@ -264,31 +174,21 @@ class JobService:
                 "job_id": job_id,
                 "created_at": now,
                 "updated_at": now,
-                "state": "queued",  # queued|processing|done|error|cancelled
-
+                "state": "queued",
                 "total_files": 0,
                 "processed_files": 0,
                 "ok_files": 0,
                 "review_files": 0,
                 "error_files": 0,
-
-                # ✅ job-level filter config (frontend-safe, validated)
                 "cfg": cfg_norm,
-
-                # frontend-facing
                 "files": [],
-
-                # ✅ internal: (filename, content_type, bytes) - 3-tuple ONLY
                 "_payloads": [],
-
                 "_cancel": False,
                 "_started_at": "",
                 "_finished_at": "",
                 "_last_error": "",
-                
-                # ✅ Enhanced metadata
-                "_platform_stats": {},  # Platform breakdown
-                "_extraction_methods": {},  # Extraction method breakdown
+                "_platform_stats": {},
+                "_extraction_methods": {},
             }
             self._rows[job_id] = []
 
@@ -302,16 +202,7 @@ class JobService:
         content: bytes,
         cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Add file to job
-        
-        Args:
-            job_id: Job ID
-            filename: Filename
-            content_type: Content type
-            content: File bytes
-            cfg: Per-file config (merged into job.cfg if provided)
-        """
+        """Add file to job"""
         filename = (filename or "").strip() or "file"
         content_type = (content_type or "").strip() or "application/octet-stream"
 
@@ -323,41 +214,36 @@ class JobService:
             if job.get("state") in {"processing", "done"}:
                 return
 
-            # ✅ Merge cfg into job.cfg if provided (with validation)
             if cfg:
                 job["cfg"] = _safe_cfg({**job.get("cfg", {}), **cfg})
 
             job["total_files"] = int(job.get("total_files") or 0) + 1
             job["updated_at"] = _utc_iso_z()
-
-            # ✅ Store as 3-tuple (backward compatible)
             job["_payloads"].append((filename, content_type, content))
             
-            job["files"].append(
-                {
-                    "filename": filename,
-                    "platform": "unknown",
-                    "company": "",
-                    "state": "queued",
-                    "message": "",
-                    "rows_count": 0,
-                }
-            )
+            job["files"].append({
+                "filename": filename,
+                "platform": "unknown",
+                "company": "",
+                "state": "queued",
+                "message": "",
+                "rows_count": 0,
+            })
 
     def start_processing(self, job_id: str, cfg: Optional[Dict[str, Any]] = None) -> None:
         """
         Start background processing thread
         
-        Args:
-            job_id: Job ID
-            cfg: Optional config override (validated)
+        ✅ Uses lazy import to avoid circular dependency
         """
+        # ✅ Lazy import worker (only when needed, inside function)
+        from .job_worker import process_job_files
+        
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return
 
-            # ✅ Override cfg if provided (with validation)
             if cfg:
                 job["cfg"] = _safe_cfg(cfg)
 
@@ -370,7 +256,12 @@ class JobService:
             job["_cancel"] = False
             job["_last_error"] = ""
 
-            t = threading.Thread(target=self._run_job, args=(job_id,), daemon=True)
+            # ✅ Pass process_job_files as parameter
+            t = threading.Thread(
+                target=self._run_job, 
+                args=(job_id, process_job_files), 
+                daemon=True
+            )
             self._threads[job_id] = t
             t.start()
 
@@ -397,8 +288,12 @@ class JobService:
     # Worker runner
     # -------------------------
 
-    def _run_job(self, job_id: str) -> None:
-        """Background job processing"""
+    def _run_job(self, job_id: str, process_job_files) -> None:
+        """
+        Background job processing
+        
+        ✅ Receives process_job_files as parameter (no import needed)
+        """
         try:
             process_job_files(self, job_id)
 
@@ -428,12 +323,7 @@ class JobService:
     # -------------------------
 
     def get_cfg(self, job_id: str) -> Dict[str, Any]:
-        """
-        Get job config (for worker)
-        
-        Returns:
-            Validated config dict
-        """
+        """Get job config (for worker)"""
         with self._lock:
             job = self._jobs.get(job_id) or {}
             return dict(job.get("cfg") or _safe_cfg(None))
@@ -456,43 +346,26 @@ class JobService:
             job["updated_at"] = _utc_iso_z()
 
     def update_file(self, job_id: str, index: int, patch: Dict[str, Any]) -> None:
-        """
-        Update file metadata
-        
-        Args:
-            job_id: Job ID
-            index: File index
-            patch: Fields to update (platform will be normalized)
-        """
+        """Update file metadata"""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return
             files = job.get("files") or []
             if 0 <= index < len(files):
-                # ✅ Normalize platform if provided
                 if "platform" in patch:
                     platform_raw = patch["platform"]
                     platform_normalized = _norm_platform(platform_raw)
                     if platform_normalized:
                         patch["platform"] = platform_normalized
                     else:
-                        # Keep original if invalid (for debugging)
                         patch["platform"] = str(platform_raw or "unknown")
                 
                 files[index].update(patch)
                 job["updated_at"] = _utc_iso_z()
 
     def append_rows(self, job_id: str, rows: List[Dict[str, Any]]) -> None:
-        """
-        Append rows to job results
-        
-        ✅ Enhanced: Track platform stats
-        
-        Args:
-            job_id: Job ID
-            rows: List of PEAK rows
-        """
+        """Append rows to job results"""
         if not rows:
             return
 
@@ -504,18 +377,15 @@ class JobService:
             if not job:
                 return
 
-            # ✅ Track platform stats
             platform_stats = job.get("_platform_stats") or {}
             extraction_methods = job.get("_extraction_methods") or {}
 
             for r in rows:
                 self._rows[job_id].append(dict(r))
                 
-                # Track platform
                 platform = r.get("_platform") or r.get("U_group") or "UNKNOWN"
                 platform_stats[platform] = platform_stats.get(platform, 0) + 1
                 
-                # Track extraction method
                 method = r.get("_extraction_method") or "unknown"
                 extraction_methods[method] = extraction_methods.get(method, 0) + 1
 
@@ -523,45 +393,28 @@ class JobService:
             job["_extraction_methods"] = extraction_methods
 
     def get_payloads(self, job_id: str) -> List[Tuple[str, str, bytes]]:
-        """
-        Get file payloads (for worker)
-        
-        Returns:
-            List[Tuple[filename, content_type, bytes]]
-        """
+        """Get file payloads (for worker)"""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return []
-            # ✅ Return shallow copy of 3-tuples
             return list(job.get("_payloads") or [])
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get job snapshot (for worker)
-        
-        ✅ Enhanced: Include platform stats in response
-        
-        Returns:
-            Job dict without internal fields
-        """
+        """Get job snapshot (for worker)"""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return None
 
-            # Return clean snapshot without internal fields
             out = {}
             for k, v in job.items():
                 if k.startswith("_"):
                     continue
                 out[k] = v
 
-            # Make copies of mutable structures
             out["files"] = [dict(x) for x in (out.get("files") or [])]
             out["cfg"] = dict(out.get("cfg") or _safe_cfg(None))
-            
-            # ✅ Add enhanced summary
             out["summary"] = self._get_job_summary(job_id)
             
             return out
@@ -579,16 +432,11 @@ class JobService:
             return [dict(r) for r in rows]
 
     # -------------------------
-    # ✅ Enhanced summary
+    # Enhanced summary
     # -------------------------
 
     def _get_job_summary(self, job_id: str) -> Dict[str, Any]:
-        """
-        ✅ Get enhanced job summary with platform breakdown
-        
-        Returns:
-            Summary dict with detailed stats
-        """
+        """Get enhanced job summary with platform breakdown"""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
@@ -608,7 +456,6 @@ class JobService:
                 "state": job.get("state", "unknown"),
             }
             
-            # Calculate totals by platform group
             platform_groups = {}
             for platform, count in summary["platforms"].items():
                 group = PLATFORM_GROUPS.get(platform, "Other Expense")
@@ -619,12 +466,7 @@ class JobService:
             return summary
 
     def get_summary(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get job summary (public API)
-        
-        Returns:
-            Enhanced summary dict
-        """
+        """Get job summary (public API)"""
         with self._lock:
             if job_id not in self._jobs:
                 return None
@@ -670,40 +512,19 @@ class JobService:
         return removed
 
     # -------------------------
-    # ✅ Utility methods
+    # Utility methods
     # -------------------------
 
     def get_valid_platforms(self) -> List[str]:
-        """
-        Get list of valid platforms
-        
-        Returns:
-            List of valid platform names (UPPERCASE)
-        """
+        """Get list of valid platforms"""
         return sorted(VALID_PLATFORMS)
 
     def normalize_platform(self, platform: str) -> str:
-        """
-        Normalize platform name
-        
-        Args:
-            platform: Platform name (any case)
-        
-        Returns:
-            Normalized platform (UPPERCASE) or empty string if invalid
-        """
+        """Normalize platform name"""
         return _norm_platform(platform)
 
     def validate_platforms(self, platforms: List[str]) -> Tuple[List[str], List[str]]:
-        """
-        Validate list of platforms
-        
-        Args:
-            platforms: List of platform names
-        
-        Returns:
-            Tuple of (valid_platforms, invalid_platforms)
-        """
+        """Validate list of platforms"""
         valid = []
         invalid = []
         
@@ -719,7 +540,4 @@ class JobService:
 
 __all__ = [
     "JobService",
-    "VALID_PLATFORMS",
-    "PLATFORM_GROUPS",
-    "LEGACY_PLATFORM_MAP",
 ]

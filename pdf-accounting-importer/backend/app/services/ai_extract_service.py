@@ -1,19 +1,17 @@
 # backend/app/services/export_service.py
 """
-Export Service - Enhanced Version for Multi-Platform Support
+Export Service - Enhanced Version (SunEtLune / PEAK A–U)
 
-✅ Improvements:
-1. ✅ Support for 8 platforms (META, GOOGLE, SHOPEE, LAZADA, TIKTOK, SPX, THAI_TAX, UNKNOWN)
-2. ✅ Platform-aware validation and auto-correction
-3. ✅ Proper PEAK schema (A-U fields)
-4. ✅ Metadata preservation (_extraction_method, _route_name, etc.)
-5. ✅ Smart date parsing (YYYY-MM-DD, DD/MM/YYYY, etc. → YYYYMMDD)
-6. ✅ Better amount parsing (฿, THB, commas)
-7. ✅ Platform-specific field validation
-8. ✅ Auto-fix common mistakes
-9. ✅ Comprehensive logging
-10. ✅ Export summary with platform breakdown
+Key Fixes & Improvements:
+1) Correct platform detection (prefer _platform_detected / _route_name) — do NOT confuse with U_group
+2) Correct U_group meaning (expense group), not "META/GOOGLE"
+3) Platform-aware defaults (vendor name / VAT / price_type) + validation notes
+4) Resolve "ผู้รับเงิน/คู่ค้า" (D_vendor_code) into vendor CODE (Cxxxxx) via extractors/vendor_mapping.py (optional)
+5) Resolve wallet code into Q_payment_method via extractors/wallet_mapping.py (optional)
+6) Robust date/amount parsing + safe Excel injection prevention
+7) Preserve metadata fields in rows (do not delete), but export only A–U columns
 """
+
 from __future__ import annotations
 
 import csv
@@ -28,7 +26,6 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side, numbers
 from openpyxl.utils import get_column_letter
 
-# Setup logger
 logger = logging.getLogger(__name__)
 
 # =========================
@@ -59,31 +56,70 @@ COLUMNS: List[Tuple[str, str]] = [
     ("U_group", "กลุ่มจัดประเภท"),
 ]
 
-# ✅ Platform-specific vendor codes
-PLATFORM_VENDORS = {
+COL_KEYS: List[str] = [k for k, _ in COLUMNS]
+
+# =========================
+# Platforms / Rules
+# =========================
+PLATFORMS: Set[str] = {
+    "META", "GOOGLE", "SHOPEE", "LAZADA", "TIKTOK", "SPX", "THAI_TAX", "UNKNOWN"
+}
+
+# Vendor "names" (used as vendor hint/label; actual PEAK column D wants vendor code Cxxxxx in your workflow)
+PLATFORM_VENDOR_NAMES = {
     "META": "Meta Platforms Ireland",
     "GOOGLE": "Google Asia Pacific",
     "SHOPEE": "Shopee",
     "LAZADA": "Lazada",
     "TIKTOK": "TikTok",
     "SPX": "Shopee Express",
-    "THAI_TAX": "",  # Variable
+    "THAI_TAX": "",   # variable
     "UNKNOWN": "",
 }
 
-# ✅ Platform-specific VAT rules
+# VAT rules per platform
+# NOTE: VAT here is O_vat_rate (7% or NO). price type J_price_type:
+# 1 = VAT separated, 2 = VAT included, 3 = no VAT
 PLATFORM_VAT_RULES = {
-    "META": "NO",      # Reverse charge
-    "GOOGLE": "NO",    # International service
-    "SHOPEE": "7%",    # Thai marketplace
-    "LAZADA": "7%",
-    "TIKTOK": "7%",
-    "SPX": "7%",
-    "THAI_TAX": "7%",  # Usually
-    "UNKNOWN": "",
+    "META":  {"J_price_type": "3", "O_vat_rate": "NO"},
+    "GOOGLE":{"J_price_type": "3", "O_vat_rate": "NO"},
+    "SHOPEE":{"J_price_type": "1", "O_vat_rate": "7%"},
+    "LAZADA":{"J_price_type": "1", "O_vat_rate": "7%"},
+    "TIKTOK":{"J_price_type": "1", "O_vat_rate": "7%"},
+    "SPX":  {"J_price_type": "1", "O_vat_rate": "7%"},
+    "THAI_TAX":{"J_price_type": "1", "O_vat_rate": "7%"},
+    "UNKNOWN":{"J_price_type": "1", "O_vat_rate": "7%"},
 }
 
-# Columns that MUST be TEXT in Excel
+VAT_RATES: Set[str] = {"7%", "NO", ""}
+PRICE_TYPES: Set[str] = {"1", "2", "3", ""}
+PND_ALLOWED: Set[str] = {"", "1", "2", "3", "53"}
+
+# Expense groups (your canonical set)
+GROUPS: Set[str] = {
+    "Marketplace Expense",
+    "Advertising Expense",
+    "Delivery/Logistics Expense",
+    "General Expense",
+    "Inventory/COGS",
+    "Other Expense",
+    "",
+}
+
+PLATFORM_DEFAULT_GROUP = {
+    "META": "Advertising Expense",
+    "GOOGLE": "Advertising Expense",
+    "SHOPEE": "Marketplace Expense",
+    "LAZADA": "Marketplace Expense",
+    "TIKTOK": "Marketplace Expense",
+    "SPX": "Delivery/Logistics Expense",
+    "THAI_TAX": "General Expense",
+    "UNKNOWN": "Other Expense",
+}
+
+# =========================
+# Excel / CSV concerns
+# =========================
 TEXT_COL_KEYS: Set[str] = {
     "A_seq",
     "A_company_name",
@@ -98,37 +134,40 @@ TEXT_COL_KEYS: Set[str] = {
     "Q_payment_method",
 }
 
-# Numeric columns
-NUM_COL_KEYS: Set[str] = {
-    "M_qty",
-    "N_unit_price",
-    "R_paid_amount",
-}
+NUM_COL_KEYS: Set[str] = {"M_qty", "N_unit_price", "R_paid_amount"}
 
-# Date columns (YYYYMMDD format)
-DATE_COL_KEYS: Set[str] = {
-    "B_doc_date",
-    "H_invoice_date",
-    "I_tax_purchase_date",
-}
+DATE_COL_KEYS: Set[str] = {"B_doc_date", "H_invoice_date", "I_tax_purchase_date"}
 
-# CSV/Excel injection prevention
 EXCEL_INJECTION_PREFIXES = ("=", "+", "-", "@")
 
 # Regex patterns
 RE_YYYYMMDD = re.compile(r"^\d{8}$")
 RE_YYYY_MM_DD = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 RE_DD_MM_YYYY = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
-RE_DECIMAL = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
+RE_YYYY_MM_DD_SLASH = re.compile(r"^(\d{4})/(\d{2})/(\d{2})$")
 RE_ALL_WS = re.compile(r"\s+")
-RE_AMOUNT = re.compile(r"[฿,THB\s]")
+RE_AMOUNT_CLEAN = re.compile(r"[,\s]|฿|THB|บาท", re.IGNORECASE)
 
-# Limits
 MAX_ROWS = 50000
 MAX_CELL_LENGTH = 32767
 
 # =========================
-# Validation & Errors
+# Optional mappings (your project)
+# =========================
+try:
+    # expected in your repo: backend/app/extractors/vendor_mapping.py
+    from ..extractors.vendor_mapping import resolve_vendor_code  # type: ignore
+except Exception:  # pragma: no cover
+    resolve_vendor_code = None  # type: ignore
+
+try:
+    # expected in your repo: backend/app/extractors/wallet_mapping.py
+    from ..extractors.wallet_mapping import resolve_wallet_code  # type: ignore
+except Exception:  # pragma: no cover
+    resolve_wallet_code = None  # type: ignore
+
+# =========================
+# Exceptions
 # =========================
 class ExportValidationError(Exception):
     """Raised when export data validation fails"""
@@ -141,337 +180,9 @@ class PlatformValidationError(Exception):
 
 
 # =========================
-# Date Parsing
-# =========================
-def _parse_date_to_yyyymmdd(date_str: str) -> str:
-    """
-    ✅ Parse various date formats to YYYYMMDD
-    
-    Supports:
-    - YYYYMMDD (already correct)
-    - YYYY-MM-DD
-    - DD/MM/YYYY
-    - YYYY/MM/DD
-    - Timestamp
-    
-    Returns:
-        YYYYMMDD string or empty string
-    """
-    if not date_str:
-        return ""
-    
-    try:
-        s = str(date_str).strip()
-        
-        # Already YYYYMMDD
-        if RE_YYYYMMDD.match(s):
-            return s
-        
-        # YYYY-MM-DD
-        m = RE_YYYY_MM_DD.match(s)
-        if m:
-            return f"{m.group(1)}{m.group(2)}{m.group(3)}"
-        
-        # DD/MM/YYYY
-        m = RE_DD_MM_YYYY.match(s)
-        if m:
-            return f"{m.group(3)}{m.group(2)}{m.group(1)}"
-        
-        # Try parsing with datetime
-        for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"]:
-            try:
-                dt = datetime.strptime(s, fmt)
-                return dt.strftime("%Y%m%d")
-            except ValueError:
-                continue
-        
-        logger.warning(f"Could not parse date: {date_str}")
-        return ""
-    
-    except Exception as e:
-        logger.warning(f"Date parsing error: {date_str} - {e}")
-        return ""
-
-
-# =========================
-# Amount Parsing
-# =========================
-def _parse_amount(amount_str: str) -> str:
-    """
-    ✅ Parse amount strings to decimal (2 places)
-    
-    Handles:
-    - ฿30,000.00
-    - THB 50000
-    - 1,234.56
-    - "1234.56"
-    
-    Returns:
-        Decimal string like "1234.56" or ""
-    """
-    if not amount_str:
-        return ""
-    
-    try:
-        s = str(amount_str).strip()
-        
-        # Remove currency symbols and commas
-        s = RE_AMOUNT.sub("", s)
-        
-        # Parse to decimal
-        d = Decimal(s)
-        return f"{d:.2f}"
-    
-    except (InvalidOperation, ValueError) as e:
-        logger.warning(f"Amount parsing error: {amount_str} - {e}")
-        return ""
-
-
-# =========================
-# Platform Detection
-# =========================
-def _detect_platform(row: Dict[str, Any]) -> str:
-    """
-    ✅ Detect platform from row data
-    
-    Checks:
-    1. U_group field
-    2. _route_name metadata
-    3. D_vendor_code pattern
-    4. _extraction_method metadata
-    
-    Returns:
-        Platform name (META, GOOGLE, etc.)
-    """
-    try:
-        # Check U_group first
-        group = row.get("U_group", "").upper()
-        if group in PLATFORM_VENDORS:
-            return group
-        
-        # Check metadata
-        route = row.get("_route_name", "").lower()
-        if "meta" in route:
-            return "META"
-        if "google" in route:
-            return "GOOGLE"
-        
-        # Check vendor code
-        vendor = row.get("D_vendor_code", "").lower()
-        if "meta" in vendor or "facebook" in vendor:
-            return "META"
-        if "google" in vendor:
-            return "GOOGLE"
-        if "shopee express" in vendor or "spx" in vendor:
-            return "SPX"
-        if "shopee" in vendor:
-            return "SHOPEE"
-        if "lazada" in vendor:
-            return "LAZADA"
-        if "tiktok" in vendor:
-            return "TIKTOK"
-        
-        # Check extraction method
-        method = row.get("_extraction_method", "").lower()
-        if "meta" in method:
-            return "META"
-        if "google" in method:
-            return "GOOGLE"
-        
-        return "UNKNOWN"
-    
-    except Exception as e:
-        logger.warning(f"Platform detection error: {e}")
-        return "UNKNOWN"
-
-
-# =========================
-# Platform-Specific Validation
-# =========================
-def _validate_meta_ads(row: Dict[str, Any]) -> List[str]:
-    """
-    ✅ Validate Meta Ads specific fields
-    """
-    errors = []
-    
-    # Must have vendor
-    vendor = row.get("D_vendor_code", "")
-    if not vendor or "meta" not in vendor.lower():
-        errors.append("Meta Ads must have Meta Platforms Ireland as vendor")
-    
-    # VAT must be NO
-    vat = row.get("O_vat_rate", "")
-    if vat and vat.upper() != "NO":
-        errors.append(f"Meta Ads VAT must be 'NO' (reverse charge), got '{vat}'")
-    
-    # Must have reference (receipt ID)
-    if not row.get("C_reference"):
-        errors.append("Meta Ads must have reference (receipt ID)")
-    
-    # Must have amount
-    if not row.get("R_paid_amount"):
-        errors.append("Meta Ads must have paid amount")
-    
-    return errors
-
-
-def _validate_google_ads(row: Dict[str, Any]) -> List[str]:
-    """
-    ✅ Validate Google Ads specific fields
-    """
-    errors = []
-    
-    # Must have vendor
-    vendor = row.get("D_vendor_code", "")
-    if not vendor or "google" not in vendor.lower():
-        errors.append("Google Ads must have Google Asia Pacific as vendor")
-    
-    # VAT must be NO
-    vat = row.get("O_vat_rate", "")
-    if vat and vat.upper() != "NO":
-        errors.append(f"Google Ads VAT must be 'NO' (international), got '{vat}'")
-    
-    # Must have reference (payment number)
-    if not row.get("C_reference"):
-        errors.append("Google Ads must have reference (payment number)")
-    
-    # Must have amount
-    if not row.get("R_paid_amount"):
-        errors.append("Google Ads must have paid amount")
-    
-    return errors
-
-
-def _validate_thai_tax(row: Dict[str, Any]) -> List[str]:
-    """
-    ✅ Validate Thai Tax Invoice fields
-    """
-    errors = []
-    
-    # Must have 13-digit tax ID
-    tax_id = row.get("E_tax_id_13", "")
-    if not tax_id or len(tax_id) != 13:
-        errors.append(f"Thai Tax Invoice must have 13-digit tax ID, got '{tax_id}'")
-    
-    # Must have branch code
-    branch = row.get("F_branch_5", "")
-    if not branch or len(branch) != 5:
-        errors.append(f"Thai Tax Invoice must have 5-digit branch code, got '{branch}'")
-    
-    # Should have invoice number
-    if not row.get("G_invoice_no"):
-        errors.append("Thai Tax Invoice should have invoice number")
-    
-    # Should have VAT (usually 7%)
-    if not row.get("O_vat_rate"):
-        errors.append("Thai Tax Invoice should have VAT rate")
-    
-    return errors
-
-
-def _validate_platform_specific(row: Dict[str, Any], platform: str) -> List[str]:
-    """
-    ✅ Platform-specific validation dispatcher
-    """
-    try:
-        if platform == "META":
-            return _validate_meta_ads(row)
-        elif platform == "GOOGLE":
-            return _validate_google_ads(row)
-        elif platform == "THAI_TAX":
-            return _validate_thai_tax(row)
-        else:
-            return []  # No specific validation
-    
-    except Exception as e:
-        logger.error(f"Platform validation error: {e}")
-        return [f"Validation error: {str(e)[:100]}"]
-
-
-# =========================
-# Auto-Correction
-# =========================
-def _auto_correct_meta_ads(row: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    ✅ Auto-correct Meta Ads fields
-    """
-    try:
-        # Fix vendor
-        vendor = row.get("D_vendor_code", "")
-        if not vendor or "meta" not in vendor.lower():
-            row["D_vendor_code"] = PLATFORM_VENDORS["META"]
-            logger.info("Auto-corrected Meta vendor")
-        
-        # Fix VAT
-        row["O_vat_rate"] = "NO"
-        
-        # Set U_group
-        row["U_group"] = "META"
-        
-        # Copy metadata to note if available
-        method = row.get("_extraction_method")
-        if method and not row.get("T_note"):
-            row["T_note"] = f"Extraction: {method}"
-    
-    except Exception as e:
-        logger.error(f"Meta auto-correction error: {e}")
-    
-    return row
-
-
-def _auto_correct_google_ads(row: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    ✅ Auto-correct Google Ads fields
-    """
-    try:
-        # Fix vendor
-        vendor = row.get("D_vendor_code", "")
-        if not vendor or "google" not in vendor.lower():
-            row["D_vendor_code"] = PLATFORM_VENDORS["GOOGLE"]
-            logger.info("Auto-corrected Google vendor")
-        
-        # Fix VAT
-        row["O_vat_rate"] = "NO"
-        
-        # Set U_group
-        row["U_group"] = "GOOGLE"
-        
-        # Copy metadata to note
-        method = row.get("_extraction_method")
-        if method and not row.get("T_note"):
-            row["T_note"] = f"Extraction: {method}"
-    
-    except Exception as e:
-        logger.error(f"Google auto-correction error: {e}")
-    
-    return row
-
-
-def _auto_correct_platform(row: Dict[str, Any], platform: str) -> Dict[str, Any]:
-    """
-    ✅ Auto-correct platform-specific fields
-    """
-    try:
-        if platform == "META":
-            return _auto_correct_meta_ads(row)
-        elif platform == "GOOGLE":
-            return _auto_correct_google_ads(row)
-        else:
-            # Ensure U_group is set
-            if not row.get("U_group"):
-                row["U_group"] = platform
-            return row
-    
-    except Exception as e:
-        logger.error(f"Platform auto-correction error: {e}")
-        return row
-
-
-# =========================
 # Helpers
 # =========================
 def _s(v: Any) -> str:
-    """Safe string conversion"""
     if v is None:
         return ""
     try:
@@ -480,122 +191,378 @@ def _s(v: Any) -> str:
             logger.warning(f"Cell value truncated (was {len(s)} chars)")
             s = s[:MAX_CELL_LENGTH]
         return s
-    except Exception as e:
-        logger.error(f"String conversion error: {e}")
+    except Exception:
         return ""
 
 
 def _escape_excel_formula(s: str) -> str:
-    """Prevent Excel formula injection"""
     if not s:
         return s
     try:
-        if s[0] in EXCEL_INJECTION_PREFIXES:
-            return "'" + s
-        return s
+        return ("'" + s) if s[:1] in EXCEL_INJECTION_PREFIXES else s
     except Exception:
         return s
 
 
 def _compact_no_ws(v: Any) -> str:
-    """
-    ✅ Remove all whitespace (space/newline/tab)
-    """
     s = _s(v)
     if not s:
         return ""
     try:
         return RE_ALL_WS.sub("", s)
-    except Exception as e:
-        logger.error(f"Compact whitespace error: {e}")
+    except Exception:
         return s
 
 
+def _to_tax13(v: Any) -> str:
+    s = _s(v)
+    if not s:
+        return ""
+    digits = "".join(c for c in s if c.isdigit())
+    return digits[:13] if len(digits) >= 13 else ""
+
+
+def _to_branch5(v: Any) -> str:
+    s = _s(v)
+    if not s:
+        return "00000"
+    digits = "".join(c for c in s if c.isdigit())
+    if not digits:
+        return "00000"
+    return digits.zfill(5)[:5]
+
+
+def _parse_date_to_yyyymmdd(date_str: Any) -> str:
+    if date_str is None:
+        return ""
+    s = _s(date_str)
+    if not s:
+        return ""
+    try:
+        if RE_YYYYMMDD.match(s):
+            return s
+
+        m = RE_YYYY_MM_DD.match(s)
+        if m:
+            return f"{m.group(1)}{m.group(2)}{m.group(3)}"
+
+        m = RE_YYYY_MM_DD_SLASH.match(s)
+        if m:
+            return f"{m.group(1)}{m.group(2)}{m.group(3)}"
+
+        m = RE_DD_MM_YYYY.match(s)
+        if m:
+            yyyy = int(m.group(3))
+            # Handle Buddhist year (>= 2400) → Gregorian
+            if yyyy >= 2400:
+                yyyy -= 543
+            return f"{yyyy:04d}{m.group(2)}{m.group(1)}"
+
+        # Try common formats
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
+            try:
+                dt = datetime.strptime(s, fmt)
+                return dt.strftime("%Y%m%d")
+            except ValueError:
+                continue
+
+        return ""
+    except Exception:
+        return ""
+
+
+def _parse_amount(amount_str: Any) -> str:
+    if amount_str is None:
+        return ""
+    s = _s(amount_str)
+    if not s:
+        return ""
+    try:
+        # keep minus? For your use case: expenses are positive; if negative, return ""
+        cleaned = RE_AMOUNT_CLEAN.sub("", s).strip()
+        if cleaned.startswith("(") and cleaned.endswith(")"):
+            cleaned = "-" + cleaned[1:-1]
+        cleaned = cleaned.replace("−", "-")
+        d = Decimal(cleaned)
+        if d < 0:
+            return ""
+        return f"{d:.2f}"
+    except (InvalidOperation, ValueError):
+        return ""
+
+
+def _clamp_choice(v: Any, allowed: Set[str], fallback: str) -> str:
+    s = _s(v)
+    return s if s in allowed else fallback
+
+
+def _append_note(rr: Dict[str, Any], msg: str, max_lines: int = 6) -> None:
+    msg = _s(msg)
+    if not msg:
+        return
+    cur = _s(rr.get("T_note"))
+    lines = [ln.strip() for ln in cur.splitlines() if ln.strip()] if cur else []
+    if msg not in lines:
+        lines.append(msg)
+    rr["T_note"] = "\n".join(lines[:max_lines])[:1500]
+
+
 # =========================
-# Preprocessing
+# Platform detection
+# =========================
+def _detect_platform(row: Dict[str, Any]) -> str:
+    """
+    Detect platform from the row.
+    Priority:
+    1) _platform_detected (from AI)
+    2) _route_name
+    3) vendor name hint (if D_vendor_code currently contains vendor name)
+    4) group hint (if U_group looks like a group, do NOT treat as platform)
+    """
+    try:
+        p = _s(row.get("_platform_detected")).upper()
+        if p in PLATFORMS:
+            return p
+
+        route = _s(row.get("_route_name")).lower()
+        if "meta" in route:
+            return "META"
+        if "google" in route:
+            return "GOOGLE"
+        if "spx" in route or "shopee_express" in route or "shopee-express" in route:
+            return "SPX"
+        if "shopee" in route:
+            return "SHOPEE"
+        if "lazada" in route:
+            return "LAZADA"
+        if "tiktok" in route:
+            return "TIKTOK"
+        if "thai" in route and "tax" in route:
+            return "THAI_TAX"
+
+        vendor = _s(row.get("D_vendor_code")).lower()
+        # if already a Cxxxxx code → can't infer platform from it reliably
+        if vendor.startswith("c") and vendor[1:].isdigit():
+            # try fallback from other fields
+            pass
+        else:
+            if "meta" in vendor or "facebook" in vendor or "instagram" in vendor:
+                return "META"
+            if "google" in vendor:
+                return "GOOGLE"
+            if "shopee express" in vendor or "spx" in vendor:
+                return "SPX"
+            if "shopee" in vendor or "ช้อปปี้" in vendor or "ช็อปปี้" in vendor:
+                return "SHOPEE"
+            if "lazada" in vendor or "ลาซาด้า" in vendor:
+                return "LAZADA"
+            if "tiktok" in vendor or "ติ๊กต๊อก" in vendor:
+                return "TIKTOK"
+
+        # If looks like Thai tax invoice (has tax id 13 + invoice no)
+        tax13 = _to_tax13(row.get("E_tax_id_13"))
+        inv = _s(row.get("G_invoice_no"))
+        if tax13 and inv:
+            return "THAI_TAX"
+
+        return "UNKNOWN"
+    except Exception:
+        return "UNKNOWN"
+
+
+# =========================
+# Platform enforcement
+# =========================
+def _enforce_platform_rules(rr: Dict[str, Any], platform: str) -> None:
+    # VAT rules
+    rules = PLATFORM_VAT_RULES.get(platform) or PLATFORM_VAT_RULES["UNKNOWN"]
+    rr["J_price_type"] = _clamp_choice(rr.get("J_price_type"), PRICE_TYPES, rules["J_price_type"])
+    rr["O_vat_rate"] = _clamp_choice(rr.get("O_vat_rate"), VAT_RATES, rules["O_vat_rate"])
+
+    # Default group (ensure it is a group, not platform code)
+    ug = _s(rr.get("U_group"))
+    if ug not in GROUPS:
+        rr["U_group"] = PLATFORM_DEFAULT_GROUP.get(platform, "Other Expense")
+    elif not ug:
+        rr["U_group"] = PLATFORM_DEFAULT_GROUP.get(platform, "Other Expense")
+
+    # Vendor name hint (kept as hint; actual PEAK D field should become vendor code Cxxxxx via mapping if possible)
+    # We'll only set vendor name if empty AND mapping later fails.
+    if not _s(rr.get("D_vendor_code")):
+        rr["D_vendor_code"] = PLATFORM_VENDOR_NAMES.get(platform, "") or ""
+
+
+# =========================
+# Vendor code mapping (Cxxxxx)
+# =========================
+def _maybe_resolve_vendor_code(rr: Dict[str, Any]) -> None:
+    """
+    Convert rr["D_vendor_code"] into PEAK vendor CODE (Cxxxxx) when possible,
+    based on your vendor_mapping.py (client_tax_id + vendor tax id/name).
+    Safe: if resolver not available or can't resolve, keep existing value.
+    """
+    if resolve_vendor_code is None:
+        return
+
+    # Your workflow: use client tax id to decide mapping table
+    client_tax_id = _to_tax13(rr.get("_client_tax_id") or rr.get("client_tax_id") or rr.get("A_company_tax_id"))
+    vendor_tax_id = _to_tax13(rr.get("E_tax_id_13"))
+    vendor_name = _s(rr.get("_vendor_name_hint") or rr.get("D_vendor_code"))
+
+    try:
+        code = resolve_vendor_code(
+            client_tax_id=client_tax_id,
+            vendor_tax_id=vendor_tax_id,
+            vendor_name=vendor_name,
+        )
+        if code:
+            rr["D_vendor_code"] = _s(code)
+            return
+    except Exception as e:
+        logger.warning(f"resolve_vendor_code error: {e}")
+
+    # If cannot resolve, keep existing D_vendor_code as-is
+
+
+# =========================
+# Wallet code mapping (EWLxxx)
+# =========================
+def _maybe_resolve_wallet(rr: Dict[str, Any]) -> None:
+    """
+    If wallet_mapping.py exists, set Q_payment_method to wallet code
+    using seller_id/shop_name/ocr hints stored in metadata.
+    Safe fallback: keep existing.
+    """
+    if resolve_wallet_code is None:
+        return
+
+    # Prefer metadata from extract step
+    seller_id = _s(rr.get("_seller_id") or rr.get("seller_id"))
+    shop_name = _s(rr.get("_shop_name") or rr.get("shop_name"))
+    ocr_text_hint = _s(rr.get("_ocr_text_hint") or "")
+
+    # If already set and looks like EWLxxx, keep it
+    cur = _s(rr.get("Q_payment_method"))
+    if cur.upper().startswith("EWL") and cur[3:].isdigit():
+        return
+
+    try:
+        code = resolve_wallet_code(
+            seller_id=seller_id,
+            shop_name=shop_name,
+            text=ocr_text_hint,
+        )
+        if code:
+            rr["Q_payment_method"] = _s(code)
+    except Exception as e:
+        logger.warning(f"resolve_wallet_code error: {e}")
+
+
+# =========================
+# Validation notes
+# =========================
+def _platform_validation_notes(rr: Dict[str, Any], platform: str) -> None:
+    # lightweight: do not block export, just add warnings
+    if platform in {"META", "GOOGLE"}:
+        if _s(rr.get("O_vat_rate")).upper() != "NO":
+            _append_note(rr, f"⚠️ {platform}: VAT ควรเป็น NO")
+        if not _s(rr.get("C_reference")):
+            _append_note(rr, f"⚠️ {platform}: ไม่มีเลขอ้างอิง (C_reference)")
+        if not _s(rr.get("R_paid_amount")):
+            _append_note(rr, f"⚠️ {platform}: ไม่มีจำนวนเงินชำระ (R_paid_amount)")
+
+    if platform == "THAI_TAX":
+        if len(_to_tax13(rr.get("E_tax_id_13"))) != 13:
+            _append_note(rr, "⚠️ THAI_TAX: ไม่พบเลขผู้เสียภาษี 13 หลักของผู้ขาย")
+        if len(_to_branch5(rr.get("F_branch_5"))) != 5:
+            _append_note(rr, "⚠️ THAI_TAX: เลขสาขาควรเป็น 5 หลัก (00000 ได้)")
+        if not _s(rr.get("G_invoice_no")):
+            _append_note(rr, "⚠️ THAI_TAX: ควรมีเลขที่ใบกำกับฯ")
+
+
+# =========================
+# Preprocess
 # =========================
 def _preprocess_rows_for_export(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    ✅ Comprehensive preprocessing with platform awareness
-    
-    Steps:
-    1. Detect platform
-    2. Auto-correct platform-specific fields
-    3. Renumber sequences
-    4. Parse dates to YYYYMMDD
-    5. Parse amounts
-    6. Compact references
-    7. Validate platform-specific rules
-    8. Preserve metadata
-    """
     out: List[Dict[str, Any]] = []
     seq = 1
-    
+
     logger.info(f"Preprocessing {len(rows)} rows...")
-    
+
     for idx, r in enumerate(rows or [], start=1):
         try:
-            rr = dict(r)
-            
-            # 1. Detect platform
+            rr = dict(r or {})
+
+            # 1) detect platform
             platform = _detect_platform(rr)
-            
-            # 2. Auto-correct platform-specific fields
-            rr = _auto_correct_platform(rr, platform)
-            
-            # 3. Sequence number
+            rr["_platform_final"] = platform  # keep metadata for debugging
+
+            # 2) enforce platform rules
+            _enforce_platform_rules(rr, platform)
+
+            # 3) sequence
             rr["A_seq"] = str(seq)
             seq += 1
-            
-            # 4. Force blank WHT (policy)
+
+            # 4) policy: WHT blank (as your current policy)
             rr["P_wht"] = ""
-            
-            # 5. Parse dates to YYYYMMDD
-            for date_key in DATE_COL_KEYS:
-                date_val = rr.get(date_key, "")
-                if date_val:
-                    parsed = _parse_date_to_yyyymmdd(date_val)
-                    rr[date_key] = parsed
-                    if not parsed:
-                        logger.warning(f"Row {idx}: Could not parse date {date_key}: {date_val}")
-            
-            # 6. Parse amounts
-            for amt_key in ["R_paid_amount", "N_unit_price"]:
-                amt_val = rr.get(amt_key, "")
-                if amt_val:
-                    parsed = _parse_amount(amt_val)
-                    rr[amt_key] = parsed
-                    if not parsed:
-                        logger.warning(f"Row {idx}: Could not parse amount {amt_key}: {amt_val}")
-            
-            # 7. Compact references (remove spaces/newlines)
-            rr["C_reference"] = _compact_no_ws(rr.get("C_reference", ""))
-            rr["G_invoice_no"] = _compact_no_ws(rr.get("G_invoice_no", ""))
-            
-            # 8. Normalize company name
-            rr["A_company_name"] = _s(rr.get("A_company_name", ""))
-            
-            # 9. Ensure critical fields are not None
-            for key in ["D_vendor_code", "E_tax_id_13", "F_branch_5"]:
+
+            # 5) normalize tax/branch
+            rr["E_tax_id_13"] = _to_tax13(rr.get("E_tax_id_13"))
+            rr["F_branch_5"] = _to_branch5(rr.get("F_branch_5"))
+
+            # 6) parse dates
+            for dk in DATE_COL_KEYS:
+                rr[dk] = _parse_date_to_yyyymmdd(rr.get(dk))
+
+            # 7) parse amounts
+            # qty: allow integer-like
+            qty = _parse_amount(rr.get("M_qty"))
+            rr["M_qty"] = (str(int(float(qty))) if qty and abs(float(qty) - int(float(qty))) < 1e-9 else (_s(rr.get("M_qty")) or "1"))
+            rr["N_unit_price"] = _parse_amount(rr.get("N_unit_price"))
+            rr["R_paid_amount"] = _parse_amount(rr.get("R_paid_amount"))
+
+            # fallback: paid_amount from unit_price if missing
+            if not rr["R_paid_amount"] and rr["N_unit_price"]:
+                rr["R_paid_amount"] = rr["N_unit_price"]
+
+            # 8) compact ids
+            rr["C_reference"] = _compact_no_ws(rr.get("C_reference"))
+            rr["G_invoice_no"] = _compact_no_ws(rr.get("G_invoice_no"))
+
+            # 9) ensure strings and not None for critical
+            rr["A_company_name"] = _s(rr.get("A_company_name"))
+            for key in ("D_vendor_code", "E_tax_id_13", "F_branch_5", "J_price_type", "O_vat_rate", "S_pnd", "Q_payment_method"):
                 if rr.get(key) is None:
                     rr[key] = ""
-            
-            # 10. Validate platform-specific rules
-            validation_errors = _validate_platform_specific(rr, platform)
-            if validation_errors:
-                # Log but don't fail
-                logger.warning(f"Row {idx} ({platform}): {'; '.join(validation_errors)}")
-                # Add to note
-                existing_note = rr.get("T_note", "")
-                warning_note = f"⚠️ {'; '.join(validation_errors[:2])}"  # First 2 errors
-                rr["T_note"] = f"{existing_note}\n{warning_note}" if existing_note else warning_note
-            
+
+            # 10) clamp vat / price_type / pnd
+            rr["O_vat_rate"] = _clamp_choice(rr.get("O_vat_rate"), VAT_RATES, PLATFORM_VAT_RULES.get(platform, PLATFORM_VAT_RULES["UNKNOWN"])["O_vat_rate"])
+            rr["J_price_type"] = _clamp_choice(rr.get("J_price_type"), PRICE_TYPES, PLATFORM_VAT_RULES.get(platform, PLATFORM_VAT_RULES["UNKNOWN"])["J_price_type"])
+            rr["S_pnd"] = _clamp_choice(rr.get("S_pnd"), PND_ALLOWED, "")
+
+            # 11) mapping: vendor code Cxxxxx (สำคัญ)
+            _maybe_resolve_vendor_code(rr)
+
+            # 12) mapping: wallet code EWLxxx (ถ้ามี)
+            _maybe_resolve_wallet(rr)
+
+            # 13) validate notes (non-blocking)
+            _platform_validation_notes(rr, platform)
+
+            # 14) keep note clean + prevent injection
+            rr["T_note"] = _escape_excel_formula(_s(rr.get("T_note")))
+
+            # 15) If description empty: use group
+            if not _s(rr.get("L_description")):
+                rr["L_description"] = rr.get("U_group") or PLATFORM_DEFAULT_GROUP.get(platform, "Other Expense")
+
             out.append(rr)
-        
+
         except Exception as e:
             logger.error(f"Error preprocessing row {idx}: {e}", exc_info=True)
             continue
-    
+
     logger.info(f"Preprocessing complete: {len(out)} rows ready")
     return out
 
@@ -604,49 +571,36 @@ def _preprocess_rows_for_export(rows: List[Dict[str, Any]]) -> List[Dict[str, An
 # Validation
 # =========================
 def validate_rows(rows: List[Dict[str, Any]]) -> Tuple[bool, List[str]]:
-    """
-    ✅ Validate rows before export
-    """
-    errors = []
-    
+    errors: List[str] = []
+
     if not rows:
-        errors.append("No rows to export")
-        return (False, errors)
-    
+        return (False, ["No rows to export"])
+
     if len(rows) > MAX_ROWS:
-        errors.append(f"Too many rows: {len(rows)} (max: {MAX_ROWS})")
-        return (False, errors)
-    
-    # Check first 100 rows
+        return (False, [f"Too many rows: {len(rows)} (max: {MAX_ROWS})"])
+
+    # check basic structure in first 100 rows
     for idx, row in enumerate(rows[:100], start=1):
         if not isinstance(row, dict):
             errors.append(f"Row {idx}: Not a dictionary")
             continue
-        
-        # Check if row has any data
-        if not any(row.get(k) for k, _ in COLUMNS):
+        if not any(_s(row.get(k)) for k in COL_KEYS):
             errors.append(f"Row {idx}: All fields empty")
-    
-    if errors:
-        return (False, errors)
-    
-    return (True, [])
+
+    return (len(errors) == 0, errors)
 
 
 # =========================
 # Type Conversion
 # =========================
 def _to_number_or_text(key: str, raw: Any) -> Tuple[Any, str]:
-    """
-    ✅ Convert value to appropriate Excel type
-    """
     try:
         s = _s(raw)
-        
+
         # Always text
         if key in TEXT_COL_KEYS or key in DATE_COL_KEYS:
             return (_escape_excel_formula(s), numbers.FORMAT_TEXT)
-        
+
         # Numeric fields
         if key in NUM_COL_KEYS:
             if key == "M_qty":
@@ -660,8 +614,7 @@ def _to_number_or_text(key: str, raw: Any) -> Tuple[Any, str]:
                     except Exception:
                         pass
                 return (_escape_excel_formula(s), numbers.FORMAT_TEXT)
-            
-            # Money fields
+
             parsed = _parse_amount(s)
             if parsed:
                 try:
@@ -669,12 +622,9 @@ def _to_number_or_text(key: str, raw: Any) -> Tuple[Any, str]:
                 except Exception:
                     pass
             return (_escape_excel_formula(s), numbers.FORMAT_TEXT)
-        
-        # Default: text
+
         return (_escape_excel_formula(s), numbers.FORMAT_TEXT)
-    
-    except Exception as e:
-        logger.error(f"Type conversion error for {key}: {e}")
+    except Exception:
         return ("", numbers.FORMAT_TEXT)
 
 
@@ -682,12 +632,11 @@ def _to_number_or_text(key: str, raw: Any) -> Tuple[Any, str]:
 # Auto-fit Columns
 # =========================
 def _auto_fit_columns(ws, max_width: int = 60, min_width: int = 10) -> None:
-    """Auto-fit column widths"""
     try:
         for col_idx, (_key, label) in enumerate(COLUMNS, start=1):
             col_letter = get_column_letter(col_idx)
             max_len = len(str(label))
-            
+
             max_check = min(ws.max_row + 1, 102)
             for row_idx in range(2, max_check):
                 try:
@@ -700,10 +649,8 @@ def _auto_fit_columns(ws, max_width: int = 60, min_width: int = 10) -> None:
                     max_len = max(max_len, len(s))
                 except Exception:
                     continue
-            
-            width = int(min(max(max_len + 2, min_width), max_width))
-            ws.column_dimensions[col_letter].width = width
-    
+
+            ws.column_dimensions[col_letter].width = int(min(max(max_len + 2, min_width), max_width))
     except Exception as e:
         logger.error(f"Auto-fit columns error: {e}")
 
@@ -712,45 +659,33 @@ def _auto_fit_columns(ws, max_width: int = 60, min_width: int = 10) -> None:
 # CSV Export
 # =========================
 def export_rows_to_csv_bytes(rows: List[Dict[str, Any]]) -> bytes:
-    """
-    ✅ Export rows to CSV with UTF-8 BOM
-    """
     try:
         logger.info(f"Starting CSV export for {len(rows)} rows")
-        
-        # Validate
+
         is_valid, errors = validate_rows(rows)
         if not is_valid:
-            error_msg = "; ".join(errors)
-            logger.error(f"Validation failed: {error_msg}")
-            raise ExportValidationError(error_msg)
-        
-        # Preprocess
+            raise ExportValidationError("; ".join(errors))
+
         rows2 = _preprocess_rows_for_export(rows)
-        
         if not rows2:
             raise ExportValidationError("No valid rows after preprocessing")
-        
-        # Export
+
         out = io.StringIO()
         wri = csv.writer(out, quoting=csv.QUOTE_MINIMAL)
-        
-        # Header
-        wri.writerow([label for _, label in COLUMNS])
-        
-        # Data rows
+
+        wri.writerow([label for _k, label in COLUMNS])
+
         for r in rows2:
             row_out: List[str] = []
             for k, _label in COLUMNS:
-                s = _s(r.get(k, ""))
-                s = _escape_excel_formula(s)
+                s = _escape_excel_formula(_s(r.get(k, "")))
                 row_out.append(s)
             wri.writerow(row_out)
-        
+
         result = out.getvalue().encode("utf-8-sig")
         logger.info(f"✅ CSV export complete: {len(result)} bytes")
         return result
-    
+
     except ExportValidationError:
         raise
     except Exception as e:
@@ -762,80 +697,60 @@ def export_rows_to_csv_bytes(rows: List[Dict[str, Any]]) -> bytes:
 # XLSX Export
 # =========================
 def export_rows_to_xlsx_bytes(rows: List[Dict[str, Any]]) -> bytes:
-    """
-    ✅ Export rows to XLSX with formatting
-    """
     try:
         logger.info(f"Starting XLSX export for {len(rows)} rows")
-        
-        # Validate
+
         is_valid, errors = validate_rows(rows)
         if not is_valid:
-            error_msg = "; ".join(errors)
-            logger.error(f"Validation failed: {error_msg}")
-            raise ExportValidationError(error_msg)
-        
-        # Preprocess
+            raise ExportValidationError("; ".join(errors))
+
         rows2 = _preprocess_rows_for_export(rows)
-        
         if not rows2:
             raise ExportValidationError("No valid rows after preprocessing")
-        
-        # Create workbook
+
         wb = Workbook()
         ws = wb.active
         ws.title = "PEAK_IMPORT"
-        
-        # Header row
-        headers = [label for _, label in COLUMNS]
+
+        headers = [label for _k, label in COLUMNS]
         ws.append(headers)
-        
-        # Header styling
+
         header_fill = PatternFill("solid", fgColor="E8F1FF")
         header_font = Font(bold=True)
         header_align = Alignment(vertical="center", horizontal="center", wrap_text=True)
-        
+
         thin = Side(style="thin", color="D0D7E2")
         border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        
+
         for col_idx in range(1, len(COLUMNS) + 1):
             c = ws.cell(row=1, column=col_idx)
             c.fill = header_fill
             c.font = header_font
             c.alignment = header_align
             c.border = border
-        
-        # Data rows
-        for row_num, r in enumerate(rows2, start=2):
-            try:
-                values: List[Any] = []
-                formats: List[str] = []
-                
-                for k, _label in COLUMNS:
-                    v, fmt = _to_number_or_text(k, r.get(k, ""))
-                    values.append(v)
-                    formats.append(fmt)
-                
-                ws.append(values)
-                
-                current_row = ws.max_row
-                for col_idx, fmt in enumerate(formats, start=1):
-                    cell = ws.cell(row=current_row, column=col_idx)
-                    if fmt:
-                        cell.number_format = fmt
-                    # Wrap long text
-                    cell.alignment = Alignment(vertical="top", wrap_text=(col_idx in {13, 21}))
-                    cell.border = border
-            
-            except Exception as e:
-                logger.error(f"Error writing row {row_num}: {e}")
-                continue
-        
-        # Freeze panes and filter
+
+        for _row_num, r in enumerate(rows2, start=2):
+            values: List[Any] = []
+            formats: List[str] = []
+
+            for k, _label in COLUMNS:
+                v, fmt = _to_number_or_text(k, r.get(k, ""))
+                values.append(v)
+                formats.append(fmt)
+
+            ws.append(values)
+
+            current_row = ws.max_row
+            for col_idx, fmt in enumerate(formats, start=1):
+                cell = ws.cell(row=current_row, column=col_idx)
+                if fmt:
+                    cell.number_format = fmt
+                cell.alignment = Alignment(vertical="top", wrap_text=(col_idx in {13, 21}))
+                cell.border = border
+
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}1"
-        
-        # Force TEXT formatting for critical columns
+
         col_index = {k: i + 1 for i, (k, _) in enumerate(COLUMNS)}
         for key in (TEXT_COL_KEYS | DATE_COL_KEYS):
             ci = col_index.get(key)
@@ -843,22 +758,18 @@ def export_rows_to_xlsx_bytes(rows: List[Dict[str, Any]]) -> bytes:
                 continue
             for row_i in range(2, 2 + len(rows2)):
                 try:
-                    cell = ws.cell(row=row_i, column=ci)
-                    cell.number_format = numbers.FORMAT_TEXT
+                    ws.cell(row=row_i, column=ci).number_format = numbers.FORMAT_TEXT
                 except Exception:
                     continue
-        
-        # Auto-fit columns
+
         _auto_fit_columns(ws)
-        
-        # Save to bytes
+
         bio = io.BytesIO()
         wb.save(bio)
         result = bio.getvalue()
-        
         logger.info(f"✅ XLSX export complete: {len(result)} bytes")
         return result
-    
+
     except ExportValidationError:
         raise
     except Exception as e:
@@ -870,9 +781,6 @@ def export_rows_to_xlsx_bytes(rows: List[Dict[str, Any]]) -> bytes:
 # Summary
 # =========================
 def get_export_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    ✅ Get export summary with platform breakdown
-    """
     try:
         summary = {
             "total_rows": len(rows),
@@ -884,43 +792,35 @@ def get_export_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "total_amount": 0.0,
             "warnings": [],
         }
-        
-        for row in rows:
-            # Count valid rows
-            if row.get("D_vendor_code"):
+
+        for row in rows or []:
+            if _s(row.get("D_vendor_code")):
                 summary["valid_rows"] += 1
-            
-            # Detect platform
+
             platform = _detect_platform(row)
             summary["platforms"][platform] = summary["platforms"].get(platform, 0) + 1
-            
-            # Extraction methods
-            method = row.get("_extraction_method", "unknown")
+
+            method = _s(row.get("_extraction_method")) or "unknown"
             summary["extraction_methods"][method] = summary["extraction_methods"].get(method, 0) + 1
-            
-            # Clients
-            company = row.get("A_company_name", "Unknown")
+
+            company = _s(row.get("A_company_name")) or "Unknown"
             summary["clients"][company] = summary["clients"].get(company, 0) + 1
-            
-            # Date range
-            doc_date = row.get("B_doc_date")
+
+            doc_date = _parse_date_to_yyyymmdd(row.get("B_doc_date"))
             if doc_date:
                 if not summary["date_range"]["earliest"] or doc_date < summary["date_range"]["earliest"]:
                     summary["date_range"]["earliest"] = doc_date
                 if not summary["date_range"]["latest"] or doc_date > summary["date_range"]["latest"]:
                     summary["date_range"]["latest"] = doc_date
-            
-            # Total amount
-            try:
-                amt_str = row.get("R_paid_amount", "")
-                if amt_str:
-                    amt = float(_parse_amount(amt_str))
-                    summary["total_amount"] += amt
-            except Exception:
-                pass
-        
+
+            amt = _parse_amount(row.get("R_paid_amount"))
+            if amt:
+                try:
+                    summary["total_amount"] += float(amt)
+                except Exception:
+                    pass
+
         return summary
-    
     except Exception as e:
         logger.error(f"Error getting export summary: {e}")
         return {"error": str(e)}

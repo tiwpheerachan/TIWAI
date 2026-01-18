@@ -1,31 +1,16 @@
 # backend/app/services/classifier.py
-"""
-Platform Classifier - Enhanced Version for 8 Platforms
-
-✅ Improvements:
-1. ✅ Support for 8 platforms (META, GOOGLE, SHOPEE, LAZADA, TIKTOK, SPX, THAI_TAX, UNKNOWN)
-2. ✅ Meta/Facebook Ads detection
-3. ✅ Google Ads detection
-4. ✅ Thai Tax Invoice detection
-5. ✅ Priority-based classification (prevent misclassification)
-6. ✅ Integration with export_service/ai_service constants
-7. ✅ Better error handling and logging
-8. ✅ Metadata tracking
-9. ✅ Relaxed thresholds (from original)
-10. ✅ Enhanced debug support
-"""
 from __future__ import annotations
 
+import os
 import re
 import logging
 from typing import Literal, Dict, Tuple, Optional
 
 from ..utils.text_utils import normalize_text
 
-# Setup logger
 logger = logging.getLogger(__name__)
 
-# ✅ 8 platforms (aligned with export_service and ai_service)
+# ✅ 8 platforms (aligned with export_service & ai_service)
 PlatformLabel = Literal[
     "META",      # Meta/Facebook Ads
     "GOOGLE",    # Google Ads
@@ -34,73 +19,70 @@ PlatformLabel = Literal[
     "TIKTOK",    # TikTok Shop
     "SPX",       # Shopee Express
     "THAI_TAX",  # Thai Tax Invoice
-    "UNKNOWN"    # Unknown/Other
+    "UNKNOWN",   # Unknown/Other
 ]
 
 # ---------------------------------------------------------------------
 # Strong ID Regex (High Confidence)
 # ---------------------------------------------------------------------
 
-# ✅ Meta/Facebook Ads patterns
-RE_META_RECEIPT = re.compile(
-    r"\bRC\s*META\s*[A-Z0-9\-/]{6,}\b",
-    re.IGNORECASE
-)
-RE_META_IRELAND = re.compile(
-    r"meta\s*platforms?\s*ireland",
-    re.IGNORECASE
-)
-RE_FACEBOOK = re.compile(
-    r"\b(facebook|fb\s*ads|instagram\s*ads)\b",
-    re.IGNORECASE
-)
+# Meta/Facebook Ads patterns
+RE_META_RECEIPT = re.compile(r"\bRC\s*META\s*[A-Z0-9\-/]{6,}\b", re.IGNORECASE)
+RE_META_IRELAND = re.compile(r"meta\s*platforms?\s*ireland", re.IGNORECASE)
+RE_FACEBOOK = re.compile(r"\b(facebook|fb\s*ads|instagram\s*ads)\b", re.IGNORECASE)
 
-# ✅ Google Ads patterns
-RE_GOOGLE_PAYMENT = re.compile(
-    r"\b[VW]\s*\d{15,20}\b",  # Payment numbers like V0971174339667745
-    re.IGNORECASE
-)
-RE_GOOGLE_ASIA = re.compile(
-    r"google\s*asia\s*pacific",
-    re.IGNORECASE
-)
-RE_GOOGLE_ADS = re.compile(
-    r"\b(google\s*ad(?:s|words)?|google\s*advertising)\b",
-    re.IGNORECASE
-)
+# Google Ads patterns
+RE_GOOGLE_PAYMENT = re.compile(r"\b[VW]\s*\d{15,20}\b", re.IGNORECASE)  # V0971174339667745
+RE_GOOGLE_ASIA = re.compile(r"google\s*asia\s*pacific", re.IGNORECASE)
+RE_GOOGLE_ADS = re.compile(r"\b(google\s*ad(?:s|words)?|google\s*advertising)\b", re.IGNORECASE)
 
-# ✅ Thai Tax Invoice patterns
-RE_THAI_TAX_INVOICE = re.compile(
-    r"(ใบกำกับภาษี|ใบเสร็จรับเงิน|tax\s*invoice)",
-    re.IGNORECASE
-)
+# Thai Tax Invoice patterns
+RE_THAI_TAX_INVOICE = re.compile(r"(ใบกำกับภาษี|ใบเสร็จรับเงิน|tax\s*invoice)", re.IGNORECASE)
 RE_TAX_ID_13 = re.compile(r"\b(\d{13})\b")
 RE_BRANCH_5 = re.compile(r"(?:branch|สาขา)\s*[:#]?\s*(\d{5})", re.IGNORECASE)
 
-# SPX: RCSPX... (handle whitespace/newline)
+# SPX patterns (shipping docs)
 RE_SPX_RCSPX = re.compile(r"\bRCS\s*PX\s*[A-Z0-9\-/]{6,}\b", re.IGNORECASE)
 RE_SPX_RCS_ANY = re.compile(r"\bRCS\s*[A-Z0-9]{3,}\b", re.IGNORECASE)
 
-# Lazada: THMPTIxxxxxxxxxxxxxxxx
+# Lazada
 RE_LAZADA_THMPTI = re.compile(r"\bTHMPTI\s*\d{10,20}\b", re.IGNORECASE)
 
-# TikTok: TTSTH* or TikTok Shop
+# TikTok
 RE_TIKTOK_TTSTH = re.compile(r"\bTTSTH[0-9A-Z\-/]*\b", re.IGNORECASE)
 RE_TIKTOK_WORD = re.compile(r"\btiktok\b", re.IGNORECASE)
 
-# Shopee: TIV-/TIR- patterns (strong)
+# Shopee
 RE_SHOPEE_TIV = re.compile(r"\bTIV\s*-\s*[A-Z0-9]{3,}\b", re.IGNORECASE)
 RE_SHOPEE_TIR = re.compile(r"\bTIR\s*-\s*[A-Z0-9]{3,}\b", re.IGNORECASE)
 RE_SHOPEE_WORD = re.compile(r"\bshopee\b", re.IGNORECASE)
+RE_SHOPEE_TRS = re.compile(r"\bTRS\b", re.IGNORECASE)  # weak; only with shopee context
 
-# Shopee TRS is weak (only count with Shopee context)
-RE_SHOPEE_TRS = re.compile(r"\bTRS\b", re.IGNORECASE)
+# ---------------------------------------------------------------------
+# Filename-only hints (สำคัญมากเวลาข้อความใน PDF สั้น)
+# ---------------------------------------------------------------------
+FILENAME_META_HINTS = (
+    "meta", "facebook", "fb", "instagram", "ig", "meta-ads", "fb-ads", "facebook-ads",
+)
+FILENAME_GOOGLE_HINTS = (
+    "google", "adwords", "googleads", "google-ads", "gads",
+)
+FILENAME_SPX_HINTS = (
+    "spx", "rcspx", "shopee express", "shopee-express", "standard express", "waybill", "awb",
+)
+FILENAME_SHOPEE_HINTS = (
+    "shopee", "tiv", "tir", "shopee-ti", "shopee-th", "shopee(thailand)",
+)
+FILENAME_LAZADA_HINTS = (
+    "lazada", "lzd", "laz", "thmpti",
+)
+FILENAME_TIKTOK_HINTS = (
+    "tiktok", "ttsth", "tt shop", "tiktokshop",
+)
 
 # ---------------------------------------------------------------------
 # Signals (Soft Keywords)
 # ---------------------------------------------------------------------
-
-# ✅ Meta/Facebook Ads signals
 META_SIGS_STRONG = (
     "meta platforms ireland",
     "facebook ireland",
@@ -114,7 +96,6 @@ META_SIGS_WEAK = (
     "reverse charge", "vat reverse",
 )
 
-# ✅ Google Ads signals
 GOOGLE_SIGS_STRONG = (
     "google asia pacific",
     "google advertising",
@@ -125,7 +106,6 @@ GOOGLE_SIGS_WEAK = (
     "google ads", "google payment", "adwords",
 )
 
-# ✅ Thai Tax Invoice signals
 THAI_TAX_SIGS = (
     "ใบกำกับภาษี",
     "ใบเสร็จรับเงิน",
@@ -135,13 +115,12 @@ THAI_TAX_SIGS = (
     "สำนักงานใหญ่",
 )
 
-# Marketplace signals
 SHOPEE_SIGS = (
     "shopee", "shopee-ti", "shopee-tiv", "shopee-tir",
     "tiv-", "tir-", "ช้อปปี้", "shopee (thailand)",
 )
 LAZADA_SIGS = (
-    "lazada", "lazada invoice", "lzd", "laz", "ลาซาด้า",
+    "lazada", "lazada invoice", "lzd", "ลาซาด้า", "seller center",
 )
 TIKTOK_SIGS = (
     "tiktok", "tiktok shop", "tt shop", "tiktok commerce", "ติ๊กต็อก",
@@ -151,26 +130,11 @@ SPX_SIGS = (
     "spx (thailand)", "spx express (thailand)", "shopee express",
 )
 
-# Generic ads signals (for old "ads" category, now mostly replaced by META/GOOGLE)
-ADS_SIGS_STRONG = (
-    "ad invoice", "ads invoice", "tax invoice for ads",
-    "billing", "statement", "charged", "payment for ads",
-    "ads account", "ad account", "invoice for advertising",
-    "โฆษณา", "ค่าโฆษณา", "ยิงแอด", "บิลโฆษณา",
-)
-
-# Negative shipping/tracking context (prevent false ads classification)
-NEGATIVE_FOR_ADS = (
-    "address", "shipment", "shipping", "tracking", "waybill",
-    "parcel", "ผู้รับ", "ที่อยู่", "ขนส่ง", "พัสดุ",
-)
-
-# Generic invoice signals
 INVOICE_SIGS = (
     "ใบกำกับภาษี", "tax invoice", "receipt", "ใบเสร็จ", "invoice",
 )
 
-# Known client tax IDs (to exclude from vendor detection)
+# Known client tax IDs (exclude from vendor detection)
 CLIENT_TAX_IDS = {
     "0105563022918",  # SHD
     "0105561071873",  # Rabbit
@@ -178,30 +142,35 @@ CLIENT_TAX_IDS = {
 }
 
 # ---------------------------------------------------------------------
+# NEW: Marketplace identity extraction (for description building)
+# ---------------------------------------------------------------------
+RE_SELLER_ID = re.compile(r"\bSeller\s*ID\b\s*[:#]?\s*([0-9]{6,20})\b", re.IGNORECASE)
+RE_USERNAME = re.compile(r"\bUsername\b\s*[:#]?\s*([A-Za-z0-9_.\-]{2,64})\b", re.IGNORECASE)
+
+# Sometimes appears in Shopee docs as: "Seller ID 1646465545  nextgadget"
+RE_SELLER_ID_LOOSE = re.compile(r"\bseller\s*id\s*[:#]?\s*([0-9]{6,20})\b", re.IGNORECASE)
+
+# ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
-
 def _norm(s: str) -> str:
-    """Normalize + lower + trim; keep it safe"""
+    """Normalize + lower + trim; keep speed stable"""
     try:
-        t = normalize_text(s or "")
-        t = t.lower()
+        t = normalize_text(s or "").lower()
+        # prevent mega text slowdown
         if len(t) > 160_000:
-            # Head+tail window to keep speed stable
             t = t[:100_000] + "\n...\n" + t[-40_000:]
         return t
     except Exception as e:
-        logger.warning(f"Normalization error: {e}")
+        logger.warning("Normalization error: %s", e)
         return ""
 
 
 def _contains_any(t: str, needles: tuple[str, ...]) -> bool:
-    """Check if text contains any of the needles"""
     return any(n and (n in t) for n in needles)
 
 
 def _count_contains(t: str, needles: tuple[str, ...]) -> int:
-    """Count how many needles are in text"""
     hit = 0
     for n in needles:
         if n and (n in t):
@@ -210,7 +179,6 @@ def _count_contains(t: str, needles: tuple[str, ...]) -> int:
 
 
 def _regex_hit(t: str, rx: re.Pattern) -> bool:
-    """Safe regex search"""
     try:
         return rx.search(t) is not None
     except Exception:
@@ -219,30 +187,111 @@ def _regex_hit(t: str, rx: re.Pattern) -> bool:
 
 def _has_vendor_tax_id(t: str) -> bool:
     """
-    ✅ Check if text has 13-digit tax ID that is NOT client's
-    (Strong indicator of Thai Tax Invoice)
+    ✅ Check if text has 13-digit tax ID NOT in client list
+    (Strong indicator for Thai Tax Invoice)
     """
     try:
         for m in RE_TAX_ID_13.finditer(t):
             tax = m.group(1)
-            if tax not in CLIENT_TAX_IDS:
+            if tax and tax not in CLIENT_TAX_IDS:
                 return True
         return False
     except Exception:
         return False
 
 
+# --------------------------
+# NEW: Filename helpers
+# --------------------------
+def extract_filename_stem(filename: str) -> str:
+    """
+    Return clean stem without path and extension.
+    Example:
+      'C:\\x\\Shopee-TIV-TRSPEMKP00-00000-251201-0013100.pdf'
+      -> 'Shopee-TIV-TRSPEMKP00-00000-251201-0013100'
+    """
+    if not filename:
+        return ""
+    try:
+        base = os.path.basename(filename).strip()
+        stem, _ext = os.path.splitext(base)
+        return stem.strip()
+    except Exception:
+        return ""
+
+
+def extract_doc_ref_from_filename(filename: str) -> str:
+    """
+    ต้องการ: C_reference/G_invoice_no ให้ “เป็นชื่อไฟล์เต็มๆ”
+    -> เอา stem แล้ว normalize เป็น no-space
+    """
+    stem = extract_filename_stem(filename)
+    if not stem:
+        return ""
+    # no whitespace / no newlines
+    return re.sub(r"\s+", "", stem)
+
+
+def extract_marketplace_identity(text: str) -> Tuple[str, str]:
+    """
+    Try to extract (seller_id, username) from document text.
+    Returns ("", "") if not found.
+    """
+    t = _norm(text)
+    seller_id = ""
+    username = ""
+
+    try:
+        m = RE_SELLER_ID.search(t)
+        if m:
+            seller_id = m.group(1).strip()
+
+        u = RE_USERNAME.search(t)
+        if u:
+            username = u.group(1).strip()
+
+        if not seller_id:
+            m2 = RE_SELLER_ID_LOOSE.search(t)
+            if m2:
+                seller_id = m2.group(1).strip()
+
+        return seller_id, username
+    except Exception:
+        return "", ""
+
+
+def _filename_boost(score: Dict[str, int], fn: str) -> None:
+    """Filename-only boosting (critical for short PDFs / image-based)"""
+    if not fn:
+        return
+
+    # SPX highest among filename hints
+    if _contains_any(fn, FILENAME_SPX_HINTS) or "rcspx" in fn:
+        score["SPX"] += 55
+
+    # META / GOOGLE
+    if _contains_any(fn, FILENAME_META_HINTS):
+        score["META"] += 40
+    if _contains_any(fn, FILENAME_GOOGLE_HINTS):
+        score["GOOGLE"] += 40
+
+    # marketplaces
+    if _contains_any(fn, FILENAME_LAZADA_HINTS):
+        score["LAZADA"] += 30
+    if _contains_any(fn, FILENAME_TIKTOK_HINTS):
+        score["TIKTOK"] += 26
+    if _contains_any(fn, FILENAME_SHOPEE_HINTS):
+        score["SHOPEE"] += 24
+
+
 def _weighted_score(t: str, filename: str) -> Dict[str, int]:
     """
-    ✅ Weighted scoring for 8 platforms using BOTH text and filename
-    
-    Returns:
-        Dict with scores for each platform
+    ✅ Weighted scoring using BOTH text and filename
     """
     fn = _norm(filename)
     tt = t
 
-    score = {
+    score: Dict[str, int] = {
         "META": 0,
         "GOOGLE": 0,
         "SHOPEE": 0,
@@ -252,335 +301,188 @@ def _weighted_score(t: str, filename: str) -> Dict[str, int]:
         "THAI_TAX": 0,
     }
 
-    # ========== Priority 1: Meta/Facebook Ads (Highest) ==========
-    # Meta receipt ID (RCMETA...)
+    # filename boost
+    _filename_boost(score, fn)
+
+    # META strong
     if _regex_hit(tt, RE_META_RECEIPT) or _regex_hit(fn, RE_META_RECEIPT):
-        score["META"] += 150
-    
-    # Meta Platforms Ireland (very strong)
+        score["META"] += 170
     if _regex_hit(tt, RE_META_IRELAND) or _regex_hit(fn, RE_META_IRELAND):
-        score["META"] += 140
-    
-    # Facebook/Instagram ads
+        score["META"] += 165
     if _regex_hit(tt, RE_FACEBOOK) or _regex_hit(fn, RE_FACEBOOK):
-        score["META"] += 80
-    
-    # Meta signals
-    score["META"] += 15 * _count_contains(tt, META_SIGS_STRONG)
-    score["META"] += 20 * _count_contains(fn, META_SIGS_STRONG)
-    score["META"] += 8 * _count_contains(tt, META_SIGS_WEAK)
-    score["META"] += 10 * _count_contains(fn, META_SIGS_WEAK)
+        score["META"] += 90
+    score["META"] += 16 * _count_contains(tt, META_SIGS_STRONG)
+    score["META"] += 10 * _count_contains(tt, META_SIGS_WEAK)
 
-    # ========== Priority 2: Google Ads ==========
-    # Google payment number (V...)
+    # GOOGLE strong
     if _regex_hit(tt, RE_GOOGLE_PAYMENT) or _regex_hit(fn, RE_GOOGLE_PAYMENT):
-        score["GOOGLE"] += 150
-    
-    # Google Asia Pacific (very strong)
+        score["GOOGLE"] += 170
     if _regex_hit(tt, RE_GOOGLE_ASIA) or _regex_hit(fn, RE_GOOGLE_ASIA):
-        score["GOOGLE"] += 140
-    
-    # Google Ads patterns
+        score["GOOGLE"] += 165
     if _regex_hit(tt, RE_GOOGLE_ADS) or _regex_hit(fn, RE_GOOGLE_ADS):
-        score["GOOGLE"] += 80
-    
-    # Google signals
-    score["GOOGLE"] += 15 * _count_contains(tt, GOOGLE_SIGS_STRONG)
-    score["GOOGLE"] += 20 * _count_contains(fn, GOOGLE_SIGS_STRONG)
-    score["GOOGLE"] += 8 * _count_contains(tt, GOOGLE_SIGS_WEAK)
-    score["GOOGLE"] += 10 * _count_contains(fn, GOOGLE_SIGS_WEAK)
+        score["GOOGLE"] += 90
+    score["GOOGLE"] += 16 * _count_contains(tt, GOOGLE_SIGS_STRONG)
+    score["GOOGLE"] += 10 * _count_contains(tt, GOOGLE_SIGS_WEAK)
 
-    # ========== Priority 3: SPX (Before Shopee!) ==========
-    # SPX strongest: RCSPX with whitespace tolerance
+    # SPX BEFORE Shopee
     if _regex_hit(tt, RE_SPX_RCSPX) or _regex_hit(fn, RE_SPX_RCSPX):
-        score["SPX"] += 120
-    
+        score["SPX"] += 145
     if "rcspx" in tt or "rcspx" in fn:
-        score["SPX"] += 120
-    
-    # SPX signals
-    score["SPX"] += 8 * _count_contains(tt, SPX_SIGS)
-    score["SPX"] += 12 * _count_contains(fn, SPX_SIGS)
+        score["SPX"] += 145
+    score["SPX"] += 10 * _count_contains(tt, SPX_SIGS)
 
-    # ========== Priority 4: Marketplace (Lazada, TikTok, Shopee) ==========
-    # Lazada: THMPTI
+    # LAZADA
     if _regex_hit(tt, RE_LAZADA_THMPTI) or _regex_hit(fn, RE_LAZADA_THMPTI):
-        score["LAZADA"] += 100
-    score["LAZADA"] += 8 * _count_contains(tt, LAZADA_SIGS)
-    score["LAZADA"] += 12 * _count_contains(fn, LAZADA_SIGS)
+        score["LAZADA"] += 120
+    score["LAZADA"] += 10 * _count_contains(tt, LAZADA_SIGS)
 
-    # TikTok: TTSTH
+    # TIKTOK
     if _regex_hit(tt, RE_TIKTOK_TTSTH) or _regex_hit(fn, RE_TIKTOK_TTSTH):
-        score["TIKTOK"] += 100
-    score["TIKTOK"] += 8 * _count_contains(tt, TIKTOK_SIGS)
-    score["TIKTOK"] += 12 * _count_contains(fn, TIKTOK_SIGS)
+        score["TIKTOK"] += 120
+    if _regex_hit(tt, RE_TIKTOK_WORD) or _regex_hit(fn, RE_TIKTOK_WORD):
+        score["TIKTOK"] += 25
+    score["TIKTOK"] += 10 * _count_contains(tt, TIKTOK_SIGS)
 
-    # Shopee: TIV-/TIR-
+    # SHOPEE
     if _regex_hit(tt, RE_SHOPEE_TIV) or _regex_hit(fn, RE_SHOPEE_TIV):
-        score["SHOPEE"] += 90
+        score["SHOPEE"] += 110
     if _regex_hit(tt, RE_SHOPEE_TIR) or _regex_hit(fn, RE_SHOPEE_TIR):
-        score["SHOPEE"] += 90
-    if "shopee-ti" in tt or "shopee-ti" in fn:
-        score["SHOPEE"] += 80
-    
-    # Shopee signals
-    score["SHOPEE"] += 8 * _count_contains(tt, SHOPEE_SIGS)
-    score["SHOPEE"] += 12 * _count_contains(fn, SHOPEE_SIGS)
+        score["SHOPEE"] += 110
+    if _regex_hit(tt, RE_SHOPEE_WORD) or _regex_hit(fn, RE_SHOPEE_WORD):
+        score["SHOPEE"] += 22
+    score["SHOPEE"] += 10 * _count_contains(tt, SHOPEE_SIGS)
 
-    # TRS handling (Shopee weak - only count with context)
-    trs_in_text = _regex_hit(tt, RE_SHOPEE_TRS) or ("trs" in tt)
-    if trs_in_text:
-        has_shopee_context = (
-            ("shopee" in tt) or ("tiv" in tt) or ("tir" in tt) or
-            ("shopee" in fn) or ("tiv" in fn) or ("tir" in fn)
-        )
-        if has_shopee_context:
-            score["SHOPEE"] += 15
+    # TRS weak: only with Shopee context
+    trs = _regex_hit(tt, RE_SHOPEE_TRS) or ("trs" in tt)
+    if trs:
+        has_ctx = ("shopee" in tt) or ("tiv" in tt) or ("tir" in tt) or ("shopee" in fn)
+        if has_ctx:
+            score["SHOPEE"] += 18
 
-    # ========== Priority 5: Thai Tax Invoice ==========
-    # Thai tax invoice patterns
+    # THAI_TAX (conservative)
     if _regex_hit(tt, RE_THAI_TAX_INVOICE):
-        score["THAI_TAX"] += 50
-    
-    # Has vendor tax ID (not client's)
+        score["THAI_TAX"] += 55
     if _has_vendor_tax_id(tt):
-        score["THAI_TAX"] += 60
-    
-    # Has branch code
+        score["THAI_TAX"] += 70
     if _regex_hit(tt, RE_BRANCH_5):
-        score["THAI_TAX"] += 30
-    
-    # Thai tax signals
+        score["THAI_TAX"] += 35
     score["THAI_TAX"] += 10 * _count_contains(tt, THAI_TAX_SIGS)
 
-    # Penalty: If looks like Meta/Google/SPX/Marketplace, reduce Thai Tax score
-    if score["META"] > 50 or score["GOOGLE"] > 50 or score["SPX"] > 50:
-        score["THAI_TAX"] = int(score["THAI_TAX"] * 0.3)
-    elif score["SHOPEE"] > 40 or score["LAZADA"] > 40 or score["TIKTOK"] > 40:
-        score["THAI_TAX"] = int(score["THAI_TAX"] * 0.5)
+    # penalties if strong other platform exists
+    if score["META"] >= 70 or score["GOOGLE"] >= 70 or score["SPX"] >= 70:
+        score["THAI_TAX"] = int(score["THAI_TAX"] * 0.25)
+    elif score["SHOPEE"] >= 55 or score["LAZADA"] >= 55 or score["TIKTOK"] >= 55:
+        score["THAI_TAX"] = int(score["THAI_TAX"] * 0.45)
 
     return score
 
 
-def classify_platform(
-    text: str,
-    filename: str = "",
-    debug: bool = False
-) -> PlatformLabel:
+def classify_platform(text: str, filename: str = "", debug: bool = False) -> PlatformLabel:
     """
     ✅ Enhanced platform classifier for 8 platforms
-    
-    Args:
-        text: PDF text content (OCR)
-        filename: Original filename (highly informative!)
-        debug: Enable debug logging
-    
-    Returns:
-        Platform label (META, GOOGLE, SHOPEE, LAZADA, TIKTOK, SPX, THAI_TAX, UNKNOWN)
-    
-    Priority (highest to lowest):
-    1. META (Meta/Facebook Ads) - receipt ID, Ireland, strong signals
-    2. GOOGLE (Google Ads) - payment number, Asia Pacific, strong signals
-    3. SPX (Shopee Express) - RCSPX pattern
-    4. Marketplace (Lazada, TikTok, Shopee) - strong IDs
-    5. THAI_TAX (Thai Tax Invoice) - tax ID + invoice patterns
-    6. UNKNOWN (fallback)
-    
-    Features:
-    ✅ Accept filename (queue filenames are highly informative)
-    ✅ Priority-based detection (prevent misclassification)
-    ✅ Meta/Google Ads detection
-    ✅ Thai Tax Invoice detection
-    ✅ Relaxed thresholds for better recall
-    ✅ Comprehensive error handling
+    - MUST accept filename
     """
     if debug:
         logger.setLevel(logging.DEBUG)
-    
+
     try:
         t = _norm(text)
         fn = _norm(filename)
 
         if not t and not fn:
-            logger.debug("Empty text and filename -> UNKNOWN")
             return "UNKNOWN"
 
-        logger.debug(f"Classifying: {filename[:50] if filename else 'no filename'}...")
-
-        # ========== Fast Path (Strong IDs) ==========
-        # Priority 1: Meta Ads (highest)
+        # --------------------------
+        # Fast paths (strong ID)
+        # --------------------------
         if (
             _regex_hit(t, RE_META_RECEIPT) or _regex_hit(fn, RE_META_RECEIPT) or
             _regex_hit(t, RE_META_IRELAND) or _regex_hit(fn, RE_META_IRELAND)
         ):
-            logger.info("✅ Fast path: META (Meta Platforms Ireland / RCMETA)")
             return "META"
-        
-        # Priority 2: Google Ads
+
         if (
             _regex_hit(t, RE_GOOGLE_PAYMENT) or _regex_hit(fn, RE_GOOGLE_PAYMENT) or
             _regex_hit(t, RE_GOOGLE_ASIA) or _regex_hit(fn, RE_GOOGLE_ASIA)
         ):
-            logger.info("✅ Fast path: GOOGLE (Google Asia Pacific / Payment)")
             return "GOOGLE"
-        
-        # Priority 3: SPX (before Shopee!)
+
+        # SPX ก่อน Shopee เสมอ
         if (
             _regex_hit(t, RE_SPX_RCSPX) or _regex_hit(fn, RE_SPX_RCSPX) or
             ("rcspx" in t) or ("rcspx" in fn)
         ):
-            logger.info("✅ Fast path: SPX (RCSPX pattern)")
             return "SPX"
-        
-        # Priority 4: Lazada
+
         if _regex_hit(t, RE_LAZADA_THMPTI) or _regex_hit(fn, RE_LAZADA_THMPTI):
-            logger.info("✅ Fast path: LAZADA (THMPTI pattern)")
             return "LAZADA"
-        
-        # Priority 5: TikTok
+
         if _regex_hit(t, RE_TIKTOK_TTSTH) or _regex_hit(fn, RE_TIKTOK_TTSTH):
-            logger.info("✅ Fast path: TIKTOK (TTSTH pattern)")
             return "TIKTOK"
 
-        # ========== Weighted Scoring ==========
+        # --------------------------
+        # Weighted scoring
+        # --------------------------
         score = _weighted_score(t, filename=filename)
-        
-        logger.debug(f"Scores: {score}")
+        if debug:
+            logger.debug("Scores: %s", score)
 
-        # Resolve winner by score
-        best_label = max(score.items(), key=lambda kv: kv[1])[0]
-        best_score = score[best_label]
+        best_label, best_score = max(score.items(), key=lambda kv: kv[1])
 
-        # ========== Thresholds (Priority-Based) ==========
-        
-        # Priority 1: Meta Ads (threshold: 50)
-        if score["META"] >= 50:
-            logger.info(f"✅ Classification: META (score: {score['META']})")
+        # thresholds per priority
+        if score["META"] >= 55:
             return "META"
-        
-        # Priority 2: Google Ads (threshold: 50)
-        if score["GOOGLE"] >= 50:
-            logger.info(f"✅ Classification: GOOGLE (score: {score['GOOGLE']})")
+        if score["GOOGLE"] >= 55:
             return "GOOGLE"
-        
-        # Priority 3: SPX (threshold: 40, relaxed from 80)
-        if score["SPX"] >= 40:
-            logger.info(f"✅ Classification: SPX (score: {score['SPX']})")
+        if score["SPX"] >= 45:
             return "SPX"
-        
-        # Priority 4: Marketplace (thresholds: 40/30/30, relaxed)
-        if score["LAZADA"] >= 40:
-            logger.info(f"✅ Classification: LAZADA (score: {score['LAZADA']})")
+        if score["LAZADA"] >= 42:
             return "LAZADA"
-        
-        if score["TIKTOK"] >= 30:
-            logger.info(f"✅ Classification: TIKTOK (score: {score['TIKTOK']})")
+        if score["TIKTOK"] >= 34:
             return "TIKTOK"
-        
-        if score["SHOPEE"] >= 30:
-            logger.info(f"✅ Classification: SHOPEE (score: {score['SHOPEE']})")
+        if score["SHOPEE"] >= 34:
             return "SHOPEE"
-        
-        # Priority 5: Thai Tax Invoice (threshold: 60)
-        # Only if clearly has tax ID + invoice patterns
-        if score["THAI_TAX"] >= 60:
-            logger.info(f"✅ Classification: THAI_TAX (score: {score['THAI_TAX']})")
+        if score["THAI_TAX"] >= 70:
             return "THAI_TAX"
 
-        # ========== Fallback: Modest Confidence ==========
-        if best_score >= 25:
-            logger.info(f"⚠️  Modest confidence: {best_label} (score: {best_score})")
+        # modest fallback (only if reasonable)
+        if best_score >= 28 and best_label in (
+            "META", "GOOGLE", "SPX", "SHOPEE", "LAZADA", "TIKTOK", "THAI_TAX"
+        ):
             return best_label  # type: ignore[return-value]
 
-        # ========== Final Fallback: Generic Invoice ==========
-        # If has invoice patterns but no clear platform, it's likely Thai Tax
+        # invoice + vendor tax -> thai tax
         if _contains_any(t, INVOICE_SIGS) and _has_vendor_tax_id(t):
-            logger.info("⚠️  Has invoice + vendor tax ID -> THAI_TAX")
             return "THAI_TAX"
-        
-        if _contains_any(t, INVOICE_SIGS) or _contains_any(fn, INVOICE_SIGS):
-            logger.info("⚠️  Generic invoice -> UNKNOWN")
-            return "UNKNOWN"
 
-        logger.info(f"❌ UNKNOWN platform (scores: {score})")
         return "UNKNOWN"
-    
+
     except Exception as e:
-        logger.error(f"Classification error: {e}", exc_info=True)
+        logger.error("Classification error: %s", e, exc_info=True)
         return "UNKNOWN"
 
 
-def get_classification_details(
-    text: str,
-    filename: str = ""
-) -> Tuple[PlatformLabel, Dict[str, int]]:
+def get_classification_details(text: str, filename: str = "") -> Tuple[PlatformLabel, Dict[str, int]]:
     """
-    ✅ Get classification result WITH scores (for debugging)
-    
-    Args:
-        text: PDF text content
-        filename: Original filename
-    
-    Returns:
-        Tuple of (platform, scores_dict)
-    
-    Example:
-        platform, scores = get_classification_details(text, "meta_receipt.pdf")
-        print(f"Platform: {platform}")
-        print(f"Scores: {scores}")
-        # Output:
-        # Platform: META
-        # Scores: {'META': 150, 'GOOGLE': 0, 'SHOPEE': 0, ...}
+    ✅ Return (platform, scores) for debugging
     """
     try:
         t = _norm(text)
-        fn = _norm(filename)
-        
-        # Get scores
         score = _weighted_score(t, filename=filename)
-        
-        # Get classification
         platform = classify_platform(text, filename, debug=False)
-        
         return (platform, score)
-    
     except Exception as e:
-        logger.error(f"Error getting classification details: {e}")
+        logger.error("Error getting classification details: %s", e)
         return (
             "UNKNOWN",
-            {
-                "META": 0,
-                "GOOGLE": 0,
-                "SHOPEE": 0,
-                "LAZADA": 0,
-                "TIKTOK": 0,
-                "SPX": 0,
-                "THAI_TAX": 0,
-            }
+            {"META": 0, "GOOGLE": 0, "SHOPEE": 0, "LAZADA": 0, "TIKTOK": 0, "SPX": 0, "THAI_TAX": 0},
         )
 
 
 def get_platform_metadata(platform: PlatformLabel) -> Dict[str, str]:
     """
-    ✅ Get platform metadata (for integration with export_service/ai_service)
-    
-    Args:
-        platform: Platform label
-    
-    Returns:
-        Dict with platform metadata
-    
-    Example:
-        meta = get_platform_metadata("META")
-        # Returns:
-        # {
-        #     "vendor_code": "Meta Platforms Ireland",
-        #     "vat_rate": "NO",
-        #     "price_type": "3",
-        #     "group": "Advertising Expense"
-        # }
+    ✅ Metadata for integration (optional helper)
     """
-    # Integration with export_service/ai_service constants
     metadata = {
         "META": {
             "vendor_code": "Meta Platforms Ireland",
@@ -619,7 +521,7 @@ def get_platform_metadata(platform: PlatformLabel) -> Dict[str, str]:
             "group": "Delivery/Logistics Expense",
         },
         "THAI_TAX": {
-            "vendor_code": "",  # Variable (from document)
+            "vendor_code": "",
             "vat_rate": "7%",
             "price_type": "1",
             "group": "General Expense",
@@ -631,7 +533,6 @@ def get_platform_metadata(platform: PlatformLabel) -> Dict[str, str]:
             "group": "Other Expense",
         },
     }
-    
     return metadata.get(platform, metadata["UNKNOWN"])
 
 
@@ -640,4 +541,8 @@ __all__ = [
     "classify_platform",
     "get_classification_details",
     "get_platform_metadata",
+    # new helpers (to be used by extract_service/post_process)
+    "extract_filename_stem",
+    "extract_doc_ref_from_filename",
+    "extract_marketplace_identity",
 ]
