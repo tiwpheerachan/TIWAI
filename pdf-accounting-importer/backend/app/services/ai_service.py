@@ -875,9 +875,6 @@ def ai_fill_peak_row(
             cleaned["N_unit_price"] = ""
             hard_notes.append("N_unit_price cleared (matched WHT)")
 
-        # ---------------------------------------------------------------------
-        # T_note + AI metadata
-        # ---------------------------------------------------------------------
         note = str(cleaned.get("T_note", "") or "").strip()
         lines = [ln.strip() for ln in note.splitlines() if ln.strip()]
         if platform != "UNKNOWN":
