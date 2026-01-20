@@ -31,7 +31,6 @@
     LAZADA: "lazada",
     TIKTOK: "tiktok",
     SPX: "spx",
-    // FACEBOOK is NOT in backend allowed_platforms → map to other (หรือจะตัดทิ้งก็ได้)
     FACEBOOK: "other",
     OTHER: "other",
   };
@@ -47,14 +46,17 @@
     editMode: false,
 
     // ✅ pre-upload filters (multi select)
-    clientFilters: new Set(),    // e.g. {"SHD","RABBIT"}
-    platformFilters: new Set(),  // e.g. {"SHOPEE","TIKTOK"} (UI)
+    clientFilters: new Set(),
+    platformFilters: new Set(),
 
     // ✅ remember which filters used for each job (local)
     jobConfig: null,
 
     // ✅ filter strictness
-    strictMode: false,  // false = allow unknown files, true = reject unknown files
+    strictMode: false,
+
+    // ✅ NEW: compute WHT (ภาษีหัก ณ ที่จ่าย)
+    computeWht: true,
 
     // ✅ balloons guard
     balloonFiredForJob: "",
@@ -178,8 +180,6 @@
 
   function inferPlatformFromFilename(filename){
     const s = normalizeName(filename);
-
-    // SPX first
     if(/\b(spx|shopee\s*express|shopee-express)\b/.test(s)) return "SPX";
     if(/\bshopee\b/.test(s)) return "SHOPEE";
     if(/\b(lazada|laz)\b/.test(s)) return "LAZADA";
@@ -324,7 +324,7 @@
   }
 
   // =========================================================
-  // ✅ Balloon FX (single module, no duplicates)
+  // ✅ Balloon FX (เดิม)
   // =========================================================
   function ensureBalloonCSS(){
     if(document.getElementById("balloonStyle_v1")) return;
@@ -642,7 +642,6 @@
       setProgressUI(job);
       renderQueue(job);
 
-      // done/error
       if(job.state === "done" || job.state === "error"){
         if(state.pollTimer){
           clearInterval(state.pollTimer);
@@ -676,9 +675,9 @@
           rows_count: state.rows.length,
           clientTags: state.jobConfig?.clientTags || [],
           platforms: state.jobConfig?.platforms || [],
+          computeWht: !!state.jobConfig?.computeWht,
         });
 
-        // 🎈 success confetti/balloon only when done
         if(job.state === "done"){
           launchBalloonsOnce(state.jobId);
         }
@@ -730,7 +729,8 @@
         `Error=${h.error_files || 0}`,
         `rows=${h.rows_count || 0}`,
         (h.clientTags?.length ? `client=${h.clientTags.join("+")}` : ""),
-        (h.platforms?.length ? `platform=${h.platforms.join("+")}` : "")
+        (h.platforms?.length ? `platform=${h.platforms.join("+")}` : ""),
+        (typeof h.computeWht === "boolean" ? `WHT=${h.computeWht ? "on" : "off"}` : ""),
       ].filter(Boolean).join(" · ");
 
       return `
@@ -764,7 +764,7 @@
         if(backendSelect) backendSelect.value = backendUrl;
 
         state.jobId = jobId;
-        state.balloonFiredForJob = ""; // allow balloons if re-load & done
+        state.balloonFiredForJob = "";
 
         safeSetText("jobMeta", `job_id=${state.jobId} · loading...`);
 
@@ -867,7 +867,6 @@
   }
 
   function exportEditedXLSX(){
-    // simple HTML Excel export (no dependency)
     const cols = COLUMNS.map(([k,label]) => ({ k, label }));
     const rowsHtml = (state.rows || []).map((r) => {
       const tds = cols.map(c => `<td>${escapeHtml(String(r[c.k] ?? ""))}</td>`).join("");
@@ -889,7 +888,7 @@
   }
 
   // =========================================================
-  // Horizontal dock sync
+  // Horizontal dock sync (เดิม)
   // =========================================================
   let hsyncLock = false;
 
@@ -956,10 +955,15 @@
       const p = String(b.getAttribute("data-platform") || "").toUpperCase();
       toggleChip(b, state.platformFilters.has(p));
     });
-    // optional strict mode toggle
+
     const strictEl = el("strictMode");
     if(strictEl && strictEl.type === "checkbox"){
       strictEl.checked = !!state.strictMode;
+    }
+
+    const whtEl = el("computeWht");
+    if(whtEl && whtEl.type === "checkbox"){
+      whtEl.checked = !!state.computeWht;
     }
   }
 
@@ -1075,19 +1079,17 @@
   }
 
   function currentJobCfgFromFilters(){
-    const clientTags = Array.from(state.clientFilters); // UI tags (uppercase)
-    const platformsUI = Array.from(state.platformFilters); // UI tags (uppercase)
+    const clientTags = Array.from(state.clientFilters);
+    const platformsUI = Array.from(state.platformFilters);
 
     const clientTaxIds = clientTags
       .map(t => CLIENTS[t]?.taxId)
       .filter(Boolean);
 
-    // ✅ convert to backend labels (lowercase)
     const platforms = platformsUI
       .map(p => PLATFORM_TO_BACKEND[p] || "")
       .filter(Boolean);
 
-    // uniq keep order
     const uniq = (arr) => {
       const s = new Set();
       const out = [];
@@ -1104,6 +1106,7 @@
       clientTaxIds: uniq(clientTaxIds),
       platforms: uniq(platforms),
       strictMode: !!state.strictMode,
+      computeWht: !!state.computeWht,
       savedAt: nowISO()
     };
   }
@@ -1144,7 +1147,6 @@
   // Bind UI
   // =========================================================
   function bind(){
-    // Backend preset + sync
     const backendUrlInput = el("backendUrl");
     const backendSelect = el("backendSelect");
 
@@ -1170,7 +1172,6 @@
       }
     });
 
-    // strict toggle (optional)
     const strictEl = el("strictMode");
     if(strictEl && strictEl.type === "checkbox"){
       strictEl.addEventListener("change", () => {
@@ -1178,7 +1179,14 @@
       });
     }
 
-    // Settings chips
+    // ✅ NEW: WHT toggle
+    const whtEl = el("computeWht");
+    if(whtEl && whtEl.type === "checkbox"){
+      whtEl.addEventListener("change", () => {
+        state.computeWht = !!whtEl.checked;
+      });
+    }
+
     document.querySelectorAll("[data-client]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const tag = String(btn.getAttribute("data-client") || "").toUpperCase();
@@ -1217,6 +1225,7 @@
       syncFilterChipsUI();
     });
 
+    // default UI sync
     syncFilterChipsUI();
 
     // File picker
@@ -1261,8 +1270,7 @@
       state.balloonFiredForJob = "";
       renderTable();
 
-      // pre-filter
-      const { kept, skipped, details, note } = prefilterFilesBeforeUpload(state.files);
+      const { kept, details, note } = prefilterFilesBeforeUpload(state.files);
       showFilterDetails(details);
 
       if(!kept.length){
@@ -1270,7 +1278,7 @@
           "⚠️ ไม่มีไฟล์ที่ตรงกับ Filter ที่เลือก (ทุกไฟล์ถูกข้ามหมด)\n\n" +
           "แนะนำ:\n" +
           "• กด Clear ที่ Client/Platform filter\n" +
-          "• ปิด Strict Mode (ถ้ามี)\n" +
+          "• ปิด Strict Mode\n" +
           "• ตรวจชื่อไฟล์ให้มี keyword เช่น shopee / tiktok / shd / rabbit\n"
         );
         safeSetDisabled("btnUpload", false);
@@ -1285,21 +1293,21 @@
       const fd = new FormData();
       kept.forEach((f) => fd.append("files", f, f.name));
 
-      // cfg -> backend
+      // cfg -> backend (ต้องส่งครบ!)
       const cfg = currentJobCfgFromFilters();
       fd.append("client_tags", (cfg.clientTags || []).join(","));
       fd.append("client_tax_ids", (cfg.clientTaxIds || []).join(","));
       fd.append("platforms", (cfg.platforms || []).join(","));
+      fd.append("strict_mode", cfg.strictMode ? "1" : "0");
+      fd.append("compute_wht", cfg.computeWht ? "1" : "0");
 
       try{
         const res = await (await api("/api/upload", { method: "POST", body: fd })).json();
         state.jobId = res.job_id;
 
-        // save cfg for this job (UI)
         saveJobCfg(state.backendUrl, state.jobId, cfg);
         state.jobConfig = cfg;
 
-        // show backend summary (added/skipped)
         const extra = [];
         if(typeof res.files_added === "number") extra.push(`added=${res.files_added}`);
         if(typeof res.files_skipped === "number") extra.push(`skipped=${res.files_skipped}`);
@@ -1405,10 +1413,8 @@
     });
     window.addEventListener("keydown", (e) => { if(e.key === "Escape") closeModal(); });
 
-    // horizontal dock sync
     bindHScrollSync();
 
-    // initial
     renderTable();
     setButtonsEnabled(false);
     setUploadInfo();

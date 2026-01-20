@@ -45,18 +45,14 @@
           <div class="field">
             <label>เลือกปลายทาง (Preset)</label>
             <select id="backendSelect">
-              <option value="https://ai-backend-bpi9.onrender.com">
-                https://ai-backend-bpi9.onrender.com
-              </option>
-              <option value="http://localhost:8000">
-                Local · http://localhost:8000
-              </option>
+              <option value="https://tiwai.onrender.com">https://tiwai.onrender.com</option>
+              <option value="http://localhost:8000">Local · http://localhost:8000</option>
             </select>
           </div>
 
           <div class="field">
             <label>เชื่อมต่อ API (แก้ไขเองได้)</label>
-            <input id="backendUrl" placeholder="https://ai-backend-bpi9.onrender.com" />
+            <input id="backendUrl" placeholder="https://tiwai.onrender.com" />
           </div>
         </div>
       </details>
@@ -64,6 +60,7 @@
       <!-- ✅ Optional: แสดงรายละเอียด pre-filter (ถ้าคุณเรียก showFilterDetails(details)) -->
       <div id="filterDetails" style="display:none"></div>
 
+      <!-- ✅ Settings / Pre-upload filters -->
       <div class="card settingsCard settingsPhoto">
         <div class="settingsGrid">
           <div class="settingsGroup">
@@ -98,6 +95,22 @@
               <button type="button" class="chip ghost" id="btnPlatformAll">All</button>
               <button type="button" class="chip ghost" id="btnPlatformClear">Clear</button>
             </div>
+          </div>
+
+          <div class="settingsDivider"></div>
+
+          <!-- ✅ NEW: WHT toggle (compute_wht) -->
+          <div class="settingsGroup">
+            <div class="settingsLabelRow">
+              <label>ภาษีหัก ณ ที่จ่าย (WHT)</label>
+            </div>
+            <label class="switchRow">
+              <input id="computeWht" type="checkbox" checked />
+              <span class="switchUI"></span>
+              <span class="muted small">
+                ✅ ภาษีหัก ณ ที่จ่าย = คำนวณภาษี · ❌ ปิด = ไม่คำนวณ (ไม่เติม P_wht / S_pnd)
+              </span>
+            </label>
           </div>
 
           <!-- ✅ Optional: strict mode toggle (ถ้าต้องการจริง ๆ)
@@ -261,6 +274,7 @@
         <!-- ✅ Horizontal scroll dock (ต้องมีให้ bindHScrollSync() ทำงาน) -->
         <div class="hScrollDock" id="hScrollDock" style="display:none">
           <div class="hScrollBar" id="hScrollBar">
+            <div class="hScrollInner" id="hScrollInner"></div>
           </div>
         </div>
 
