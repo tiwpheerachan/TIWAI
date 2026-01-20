@@ -1,16 +1,31 @@
+# backend/app/services/job_worker.py
 """
-Job Worker - Locked Version (cfg+filename pass-through + client_tax_id resolver + compute_wht support)
+Job Worker - Locked Version (Doc+Ref Normalization + Description Pattern + Accounting Guards)
 
-✅ MUST:
-- call extract_row_from_text(text, filename=..., cfg=cfg, client_tax_id=...) for EVERY file
-- cfg must include: client_tax_ids / client_tags / compute_wht (bool)
-- resolve client_tax_id per-file so GL mapping doesn't go blank
-
-Notes:
-- Worker still DOES NOT calculate WHT itself (business logic stays in extractor/finalize)
-- Worker will only pass cfg["compute_wht"] so extractor can decide:
-    ✅ compute_wht=True  -> compute P_wht & set S_pnd (if your extractor does)
-    ❌ compute_wht=False -> do not compute WHT (leave P_wht empty, S_pnd empty)
+✅ Enhancements (ตามที่คุณขอ “ล็อก” ให้ถูก)
+1) ✅ A_seq เป็น running number จริงทั้งงาน (ไม่ reset ต่อไฟล์/ต่อ batch)
+2) ✅ Backend filtering จาก cfg ที่ frontend ส่งมา:
+   - client_tags / client_tax_ids / platforms / strictMode
+   - ถ้าไม่ match → _status = NEEDS_REVIEW + ใส่เหตุผลใน T_note + _status_reason
+3) ✅ LOCK: C_reference == G_invoice_no เสมอ
+   - ใช้ “ชื่อไฟล์เต็มๆ (stem)” เช่น TRSPEMKP00-00000-251203-0012589
+   - normalize แบบ no-space (ลบ whitespace/newlines ทั้งหมด)
+   - ไม่เอาค่าในเอกสารมา override (เพราะต้องตรงกันทุกครั้งตามนโยบายคุณ)
+4) ✅ LOCK: L_description pattern (อย่างน้อย SHOPEE):
+   Record Marketplace Expense - Shopee - Seller ID <<xxxx>> - <<Username>> - <<File Name>>
+5) ✅ LOCK: K_account mapping ตามบริษัท (client_tax_id):
+   - SHD (0105563022918) -> 520317
+   - (RB/TOPONE ถ้ายังไม่สรุป ให้คงเดิม/ปล่อยว่าง)
+6) ✅ Accounting Guards:
+   - ห้ามเดา date จาก doc id / filename (เช่น 1203-xxxx) -> worker ไม่เดา
+   - WHT ต้องคำนวณจาก Subtotal: worker ไม่คำนวณเอง แต่ “ไม่ล้าง P_wht”
+   - ห้ามเอา WHT ไปใส่ N_unit_price
+   - ห้ามเอา R_paid_amount ไปเติม N_unit_price แบบมั่ว (เอาไว้ที่ extractor/post_process เท่านั้น)
+7) ✅ กัน AI ใส่ P_wht: AI patch จะ ignore key=P_wht เสมอ
+8) ✅ Wallet mapping:
+   - พยายาม map Q_payment_method เป็น EWLxxx ผ่าน wallet_mapping.py (ถ้ามี)
+9) ✅ ไม่ทำให้ UI state=error / rows=0 ง่าย ๆ:
+   - ถ้าอ่าน text ไม่ได้ → ใส่ 1 row NEEDS_REVIEW พร้อมเหตุผล
 """
 
 from __future__ import annotations
@@ -35,8 +50,10 @@ from ..utils.validators import (
     validate_vat_rate,
 )
 
+# ✅ Import from platform_constants (NO circular import!)
 from .platform_constants import normalize_platform as _norm_platform
 
+# ✅ wallet mapping
 try:
     from ..extractors.wallet_mapping import resolve_wallet_code
 except Exception:  # pragma: no cover
@@ -54,11 +71,11 @@ CLIENT_TAX_IDS: Dict[str, str] = {
 }
 TAXID_TO_COMPANY: Dict[str, str] = {v: k for k, v in CLIENT_TAX_IDS.items()}
 
-# ✅ GL mapping per company (เติมให้ครบตามรูปของคุณ)
+# ✅ LOCK: account mapping (เติมเพิ่มได้ภายหลัง)
 ACCOUNT_BY_CLIENT_TAX_ID: Dict[str, str] = {
     "0105563022918": "520317",  # SHD
-    "0105561071873": "520315",  # RABBIT (จากรูป: Marketplace Shopee = 520315)
-    "0105565027615": "520314",  # TOPONE (จากรูป: Marketplace Shopee = 520314)
+    # "0105561071873": ".....",  # RABBIT (ใส่ตอนคุณยืนยันจากรูป)
+    # "0105565027615": ".....",  # TOPONE (ใส่ตอนคุณยืนยันจากรูป)
 }
 
 
@@ -67,6 +84,8 @@ ACCOUNT_BY_CLIENT_TAX_ID: Dict[str, str] = {
 # ============================================================
 
 RE_ALL_WS = re.compile(r"\s+")
+RE_TAX13_STRICT = re.compile(r"\b(\d{13})\b")
+
 RE_SELLER_ID_HINTS = [
     re.compile(
         r"\b(?:seller_id|seller\s*id|shop_id|shop\s*id|merchant_id|merchant\s*id)\b\D{0,20}(\d{5,20})",
@@ -74,10 +93,12 @@ RE_SELLER_ID_HINTS = [
     ),
     re.compile(r"(?:รหัสร้าน|ไอดีร้าน|รหัสผู้ขาย|ร้านค้า)\D{0,20}(\d{5,20})", re.IGNORECASE),
 ]
+
 RE_USERNAME_HINTS = [
     re.compile(r"\busername\b\D{0,20}([A-Za-z0-9_.\-]{2,64})", re.IGNORECASE),
     re.compile(r"(?:ชื่อผู้ใช้|ยูสเซอร์|ชื่อร้าน)\D{0,20}([A-Za-z0-9_.\-]{2,64})", re.IGNORECASE),
 ]
+
 RE_ANY_LONG_DIGITS = re.compile(r"\b(\d{6,20})\b")
 
 
@@ -97,15 +118,21 @@ def _digits_only(s: str) -> str:
 
 
 def _clean_money_str(v: Any) -> str:
+    """
+    Clean money string: remove currency symbols and commas.
+    Keep decimals as-is (string) because downstream export expects string.
+    """
     s = _safe_str(v)
     if not s:
         return ""
     s = s.replace("฿", "").replace("THB", "").replace(",", "").strip()
+    # normalize weird spaces
     s = RE_ALL_WS.sub("", s)
     return s
 
 
 def _compact_ref(v: Any) -> str:
+    """Remove ALL whitespace/newlines inside reference/invoice strings."""
     s = _safe_str(v)
     if not s:
         return ""
@@ -113,6 +140,7 @@ def _compact_ref(v: Any) -> str:
 
 
 def _filename_base(filename: str) -> str:
+    """Return basename with extension."""
     try:
         return os.path.basename(filename or "").strip()
     except Exception:
@@ -120,6 +148,7 @@ def _filename_base(filename: str) -> str:
 
 
 def _filename_stem(filename: str) -> str:
+    """Return basename stem WITHOUT extension."""
     base = _filename_base(filename)
     if not base:
         return ""
@@ -128,6 +157,13 @@ def _filename_stem(filename: str) -> str:
 
 
 def _doc_ref_from_filename(filename: str) -> str:
+    """
+    ✅ LOCK: C_reference / G_invoice_no ต้องเป็น doc+ref จากชื่อไฟล์เต็มๆ (stem)
+    - normalize no-space
+    Example:
+      Shopee-TIV-TRSPEMKP00-00000-251201-0013100.pdf
+      -> Shopee-TIV-TRSPEMKP00-00000-251201-0013100
+    """
     stem = _filename_stem(filename)
     if not stem:
         return ""
@@ -135,6 +171,14 @@ def _doc_ref_from_filename(filename: str) -> str:
 
 
 def _detect_platform_hint_from_filename(filename: str) -> str:
+    """
+    Quick filename hint (fallback only)
+    Priority:
+    - META/GOOGLE
+    - SPX before SHOPEE
+    - Marketplace
+    - THAI_TAX
+    """
     fn = (filename or "").upper()
 
     if "META" in fn or "FACEBOOK" in fn or "RCMETA" in fn:
@@ -159,10 +203,16 @@ def _detect_platform_hint_from_filename(filename: str) -> str:
 
 
 # ============================================================
-# Client Detection / Resolver
+# Client Detection
 # ============================================================
 
 def _detect_client_tax_id(text: str, filename: str = "", cfg: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Priority:
+      1) Text contains known client tax IDs (best)
+      2) cfg has exactly one client_tax_ids (user selected)
+      3) Filename contains RABBIT/SHD/TOPONE
+    """
     t = text or ""
     for tax in CLIENT_TAX_IDS.values():
         if tax and tax in t:
@@ -192,43 +242,31 @@ def _company_from_tax_id(client_tax_id: str, filename: str = "") -> str:
     return ""
 
 
-def _resolve_client_tax_id_for_file(
-    *,
-    detected_tax_id: str,
-    company_tag: str,
-    cfg: Dict[str, Any],
-) -> str:
-    """
-    ✅ Make sure we pass a SINGLE client_tax_id into extract_service/finalize.
+def _detect_seller_id(text: str, filename: str = "") -> str:
+    t = text or ""
+    for rx in RE_SELLER_ID_HINTS:
+        m = rx.search(t)
+        if m:
+            return _safe_str(m.group(1))
 
-    Priority:
-    1) detected_tax_id from text
-    2) cfg["client_tax_id"] (single) if exists
-    3) cfg["client_tax_ids"] if list:
-       - if length==1 -> that
-       - if many -> use company_tag mapping if possible
-       - else fallback first non-empty
-    """
-    d = (detected_tax_id or "").strip()
-    if d:
-        return d
+    candidates = RE_ANY_LONG_DIGITS.findall(t)
+    if candidates:
+        return candidates[0]
 
-    one = str(cfg.get("client_tax_id") or "").strip()
-    if one:
-        return one
+    # fallback digits in filename
+    fn_digits = re.findall(r"\d{6,20}", filename or "")
+    if fn_digits:
+        return fn_digits[0]
 
-    taxs = cfg.get("client_tax_ids")
-    if isinstance(taxs, list):
-        cleaned = [str(x).strip() for x in taxs if str(x).strip()]
-        if len(cleaned) == 1:
-            return cleaned[0]
-        if len(cleaned) > 1:
-            c = (company_tag or "").upper().strip()
-            if c and c in CLIENT_TAX_IDS:
-                pick = CLIENT_TAX_IDS[c]
-                if pick in cleaned:
-                    return pick
-            return cleaned[0]  # fallback (never empty)
+    return ""
+
+
+def _detect_username(text: str) -> str:
+    t = text or ""
+    for rx in RE_USERNAME_HINTS:
+        m = rx.search(t)
+        if m:
+            return _safe_str(m.group(1))
     return ""
 
 
@@ -237,6 +275,7 @@ def _resolve_client_tax_id_for_file(
 # ============================================================
 
 def _get_job_cfg(job_service, job_id: str) -> Dict[str, Any]:
+    """Read cfg dict from job service (backward compatible)."""
     try:
         job = job_service.get_job(job_id)  # type: ignore[attr-defined]
     except Exception:
@@ -245,67 +284,47 @@ def _get_job_cfg(job_service, job_id: str) -> Dict[str, Any]:
     if not isinstance(job, dict):
         return {}
 
-    raw = job.get("cfg")
-    cfg: Dict[str, Any] = raw if isinstance(raw, dict) else {}
+    cfg = job.get("cfg")
+    if isinstance(cfg, dict):
+        return cfg
 
     # fallback legacy shapes
-    if not cfg:
-        filters = job.get("filters")
-        if isinstance(filters, dict):
-            for k in ("client_tax_ids", "client_tags", "platforms", "strictMode", "compute_wht"):
-                if k in filters:
-                    cfg[k] = filters.get(k)
-
-    # normalize list fields
-    def _norm_list(v: Any, *, upper: bool = False) -> List[str]:
-        if v is None:
-            return []
-        if isinstance(v, str):
-            parts = [p.strip() for p in v.split(",") if p.strip()]
-        elif isinstance(v, (list, tuple, set)):
-            parts = [str(i).strip() for i in v if str(i).strip()]
-        else:
-            parts = []
-        parts = [p.upper() if upper else p for p in parts]
-        seen = set()
-        out: List[str] = []
-        for x in parts:
-            if x and x not in seen:
-                seen.add(x)
-                out.append(x)
+    filters = job.get("filters")
+    if isinstance(filters, dict):
+        out: Dict[str, Any] = {}
+        for k in ("client_tax_ids", "client_tags", "platforms", "strictMode"):
+            if k in filters:
+                out[k] = filters.get(k)
         return out
 
-    cfg["client_tags"] = _norm_list(cfg.get("client_tags"), upper=True)
-    cfg["client_tax_ids"] = _norm_list(cfg.get("client_tax_ids"), upper=False)
-    cfg["platforms"] = _norm_list(cfg.get("platforms"), upper=False)
-
-    # normalize booleans
-    cfg["strictMode"] = bool(cfg.get("strictMode", False))
-
-    # ✅ Ensure compute_wht exists as bool for whole pipeline
-    # Default = True (คำนวณ) ตามที่คุณขอให้เป็น parameter
-    if "compute_wht" not in cfg:
-        cfg["compute_wht"] = True
-    else:
-        cfg["compute_wht"] = bool(cfg.get("compute_wht"))
-
-    return cfg
+    return {}
 
 
 def _get_job_filters(job_service, job_id: str) -> Tuple[List[str], List[str], bool]:
+    """
+    Returns:
+        (allowed_companies(tags), allowed_platforms, strictMode)
+    """
     cfg = _get_job_cfg(job_service, job_id)
-    strict_mode = bool(cfg.get("strictMode", False))
+    strict_mode = bool(cfg.get("strictMode", False)) if isinstance(cfg, dict) else False
 
-    companies = cfg.get("client_tags", [])
-    platforms = cfg.get("platforms", [])
+    companies = cfg.get("client_tags") if isinstance(cfg, dict) else []
+    platforms = cfg.get("platforms") if isinstance(cfg, dict) else []
 
-    def _norm_company_list(x: Any) -> List[str]:
-        if isinstance(x, list):
-            out = [str(i).strip().upper() for i in x if str(i).strip()]
-        elif isinstance(x, str):
-            out = [p.strip().upper() for p in x.split(",") if p.strip()]
+    def _norm_list(x: Any, *, kind: str) -> List[str]:
+        if x is None:
+            return []
+        if isinstance(x, str):
+            parts = [p.strip() for p in x.split(",") if p.strip()]
+        elif isinstance(x, (list, tuple, set)):
+            parts = [str(i).strip() for i in x if str(i).strip()]
         else:
-            out = []
+            parts = []
+        if kind == "company":
+            out = [p.upper() for p in parts if p]
+        else:
+            out = [_norm_platform(p) or "UNKNOWN" for p in parts if p]
+        # unique keep order
         seen = set()
         uniq: List[str] = []
         for t in out:
@@ -314,23 +333,7 @@ def _get_job_filters(job_service, job_id: str) -> Tuple[List[str], List[str], bo
                 uniq.append(t)
         return uniq
 
-    def _norm_platform_list(x: Any) -> List[str]:
-        if isinstance(x, list):
-            out0 = [str(i).strip() for i in x if str(i).strip()]
-        elif isinstance(x, str):
-            out0 = [p.strip() for p in x.split(",") if p.strip()]
-        else:
-            out0 = []
-        out = [_norm_platform(p) or "UNKNOWN" for p in out0]
-        seen = set()
-        uniq: List[str] = []
-        for t in out:
-            if t not in seen:
-                seen.add(t)
-                uniq.append(t)
-        return uniq
-
-    return (_norm_company_list(companies), _norm_platform_list(platforms), strict_mode)
+    return (_norm_list(companies, kind="company"), _norm_list(platforms, kind="platform"), strict_mode)
 
 
 def _cfg_mismatch(
@@ -341,6 +344,10 @@ def _cfg_mismatch(
     company: str,
     platform_u: str,
 ) -> Tuple[bool, str]:
+    """
+    If filter exists and mismatch -> NEEDS_REVIEW.
+    If strictMode and cannot detect -> NEEDS_REVIEW.
+    """
     c = (company or "").upper().strip()
     p = (platform_u or "UNKNOWN").upper().strip()
 
@@ -350,6 +357,7 @@ def _cfg_mismatch(
     if not has_company_filter and not has_platform_filter:
         return (False, "")
 
+    # company
     if has_company_filter:
         if c:
             if c not in allowed_companies:
@@ -358,6 +366,7 @@ def _cfg_mismatch(
             if strict_mode:
                 return (True, f"company=unknown (strictMode, allowed: {','.join(allowed_companies)})")
 
+    # platform
     if has_platform_filter:
         if p and p != "UNKNOWN":
             if p not in allowed_platforms:
@@ -401,15 +410,23 @@ def _revalidate(row: Dict[str, Any]) -> List[str]:
 
 
 # ============================================================
-# Row policies
+# Row normalization (GLOBAL POLICIES HERE)
 # ============================================================
 
 def _apply_locked_fields(row: Dict[str, Any], *, filename: str, platform_u: str, text: str, client_tax_id: str) -> None:
+    """
+    ✅ Single place to LOCK these policies:
+    - C_reference == G_invoice_no == doc+ref from filename stem (no-space)
+    - K_account (client-based)
+    - L_description pattern (platform-based)
+    """
+    # ---- LOCK doc+ref ----
     doc_ref = _doc_ref_from_filename(filename)
     if doc_ref:
         row["C_reference"] = doc_ref
         row["G_invoice_no"] = doc_ref
     else:
+        # still force equality if something exists
         c = _compact_ref(row.get("C_reference"))
         g = _compact_ref(row.get("G_invoice_no"))
         pick = c or g
@@ -417,17 +434,20 @@ def _apply_locked_fields(row: Dict[str, Any], *, filename: str, platform_u: str,
             row["C_reference"] = pick
             row["G_invoice_no"] = pick
 
-    # ✅ K_account by client tax id (now includes RB/TOPONE too)
+    # ---- LOCK K_account by client (SHD required) ----
     if client_tax_id and client_tax_id in ACCOUNT_BY_CLIENT_TAX_ID:
         row["K_account"] = ACCOUNT_BY_CLIENT_TAX_ID[client_tax_id]
 
+    # ---- LOCK L_description pattern ----
     base = _filename_base(filename)
     seller_id = _safe_str(row.get("_seller_id")) or _detect_seller_id(text, filename)
     username = _detect_username(text)
 
+    # Fallbacks (ให้ไม่ว่าง)
     seller_id = seller_id or "unknown"
     username = username or "unknown"
 
+    # Only override when empty OR looks generic/garbled
     cur_desc = _safe_str(row.get("L_description"))
     should_override = (not cur_desc) or (cur_desc.lower() in {"-", "n/a", "na", "unknown"})
 
@@ -440,7 +460,7 @@ def _apply_locked_fields(row: Dict[str, Any], *, filename: str, platform_u: str,
         if should_override:
             row["L_description"] = locked_desc
     elif platform_u == "TIKTOK":
-        locked_desc = f"Record Marketplace Expense - Tiktok - Seller ID {seller_id} - {username} - {base}"
+        locked_desc = f"Record Marketplace Expense - TikTok - Seller ID {seller_id} - {username} - {base}"
         if should_override:
             row["L_description"] = locked_desc
     elif platform_u == "SPX":
@@ -456,44 +476,65 @@ def _apply_locked_fields(row: Dict[str, Any], *, filename: str, platform_u: str,
         if should_override:
             row["L_description"] = locked_desc
     else:
+        # UNKNOWN/THAI_TAX: keep user's/extractor's desc if any
         if should_override:
             row["L_description"] = f"Record Expense - {platform_u} - {base}"
 
 
 def _normalize_row_fields(row: Dict[str, Any], seq: int) -> None:
+    """
+    Normalize & enforce generic policies.
+    NOTE:
+    - worker จะไม่เดา date จาก filename
+    - worker จะไม่คำนวณ WHT (ต้องทำใน extractor จาก Subtotal)
+    - worker จะไม่ล้าง P_wht ทิ้งอีกต่อไป
+    - worker จะไม่ cross-fill N_unit_price จาก R_paid_amount แบบเสี่ยง
+    """
+    # ✅ Running seq
     row["A_seq"] = seq
 
+    # dates -> digits only (YYYYMMDD) (แต่ไม่เดาจาก filename)
     for k in ("B_doc_date", "H_invoice_date", "I_tax_purchase_date"):
         if row.get(k):
             row[k] = _digits_only(_safe_str(row.get(k)))[:8]
         else:
             row[k] = _safe_str(row.get(k))
 
+    # tax id / branch
     row["E_tax_id_13"] = _digits_only(_safe_str(row.get("E_tax_id_13")))[:13]
     br = _digits_only(_safe_str(row.get("F_branch_5")))
     row["F_branch_5"] = br.zfill(5)[:5] if br else "00000"
 
+    # price_type
     j = _safe_str(row.get("J_price_type"))
     row["J_price_type"] = j if j in {"1", "2", "3"} else (j or "1")
 
+    # vat rate
     o = _safe_str(row.get("O_vat_rate")).upper()
     row["O_vat_rate"] = "NO" if o in {"NO", "0", "NONE"} else ("7%" if (o == "" or "7" in o) else o)
 
+    # qty default
     row["M_qty"] = _safe_str(row.get("M_qty") or "1") or "1"
 
+    # ✅ Money: clean only, DO NOT mix fields
+    # N_unit_price = keep as-is (clean), if empty -> "0"
     n = _clean_money_str(row.get("N_unit_price"))
     row["N_unit_price"] = n if n else "0"
 
+    # R_paid_amount = keep as-is (clean), if empty -> "0"
     r = _clean_money_str(row.get("R_paid_amount"))
     row["R_paid_amount"] = r if r else "0"
 
-    # ✅ keep P_wht (do not erase)
+    # ✅ P_wht: keep if extractor computed (but clean). Do NOT force empty.
+    # (AI patch จะถูกห้ามไม่ให้ใส่ P_wht อยู่แล้ว)
     p = _clean_money_str(row.get("P_wht"))
-    row["P_wht"] = p
+    row["P_wht"] = p  # may be "" if none
 
+    # ✅ compact ref/invoice (remove whitespace/newlines)
     row["C_reference"] = _compact_ref(row.get("C_reference"))
     row["G_invoice_no"] = _compact_ref(row.get("G_invoice_no"))
 
+    # normalize common text fields
     for k in (
         "A_company_name",
         "D_vendor_code",
@@ -515,7 +556,7 @@ def _normalize_row_fields(row: Dict[str, Any], seq: int) -> None:
 
 
 # ============================================================
-# PDF/OCR helpers
+# PDF/OCR Helpers
 # ============================================================
 
 def _extract_embedded_pdf_text(data: bytes, max_pages: int = 15) -> str:
@@ -532,6 +573,7 @@ def _extract_embedded_pdf_text(data: bytes, max_pages: int = 15) -> str:
 def _write_temp_file(filename: str, data: bytes) -> str:
     ext = os.path.splitext(filename or "")[1].lower()
     if ext not in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
+        # detect content
         if data[:5] == b"%PDF-":
             ext = ".pdf"
         else:
@@ -564,8 +606,10 @@ def _append_and_update_file(
     company: str,
     message: str,
 ) -> None:
+    # append rows first (so UI sees them)
     if rows:
         job_service.append_rows(job_id, rows)
+    # update file status
     job_service.update_file(
         job_id,
         idx,
@@ -600,44 +644,26 @@ def _add_note(row: Dict[str, Any], note: str) -> None:
             row["T_note"] = f"{cur} | {note}"
 
 
-def _detect_seller_id(text: str, filename: str = "") -> str:
-    t = text or ""
-    for rx in RE_SELLER_ID_HINTS:
-        m = rx.search(t)
-        if m:
-            return _safe_str(m.group(1))
-
-    candidates = RE_ANY_LONG_DIGITS.findall(t)
-    if candidates:
-        return candidates[0]
-
-    fn_digits = re.findall(r"\d{6,20}", filename or "")
-    if fn_digits:
-        return fn_digits[0]
-
-    return ""
-
-
-def _detect_username(text: str) -> str:
-    t = text or ""
-    for rx in RE_USERNAME_HINTS:
-        m = rx.search(t)
-        if m:
-            return _safe_str(m.group(1))
-    return ""
-
-
 # ============================================================
 # Main worker
 # ============================================================
 
 def process_job_files(job_service, job_id: str) -> None:
+    """
+    Worker that:
+    - extracts text (pdfplumber -> OCR fallback)
+    - routes to extractor (extract_service)
+    - optionally calls AI to patch missing/invalid fields
+    - enforces LOCKED policies (doc+ref + description + account)
+    - enforces backend filters
+    - produces running A_seq across whole job
+    """
     payloads: List[Tuple[str, str, bytes]] = job_service.get_payloads(job_id)
 
     allowed_companies, allowed_platforms, strict_mode = _get_job_filters(job_service, job_id)
     cfg = _get_job_cfg(job_service, job_id)
 
-    # ✅ Running sequence across whole job
+    # ✅ Running sequence across the whole job
     seq = 1
 
     ok_files = 0
@@ -672,23 +698,8 @@ def process_job_files(job_service, job_id: str) -> None:
 
             text = normalize_text(text)
 
-            # detect client from text / cfg
-            detected_tax = _detect_client_tax_id(text, filename, cfg=cfg)
-            company = _company_from_tax_id(detected_tax, filename)
-
-            # ✅ resolve to SINGLE client_tax_id per file
-            client_tax_id = _resolve_client_tax_id_for_file(
-                detected_tax_id=detected_tax,
-                company_tag=company,
-                cfg=cfg,
-            )
-
-            # keep meta in cfg too (helps extract_service if it looks for client_tax_id)
-            if client_tax_id:
-                cfg_for_file = dict(cfg)
-                cfg_for_file["client_tax_id"] = client_tax_id
-            else:
-                cfg_for_file = dict(cfg)
+            client_tax_id = _detect_client_tax_id(text, filename, cfg=cfg)
+            company = _company_from_tax_id(client_tax_id, filename)
 
             # ---------- If still no text ----------
             if not text:
@@ -713,6 +724,7 @@ def process_job_files(job_service, job_id: str) -> None:
                     "_errors": ["ไม่พบข้อความจากเอกสาร"],
                 }
 
+                # normalize + LOCK fields (doc+ref, desc, account)
                 _normalize_row_fields(row_min, seq=seq)
                 _apply_locked_fields(row_min, filename=filename, platform_u=platform_u, text="", client_tax_id=client_tax_id)
 
@@ -743,12 +755,11 @@ def process_job_files(job_service, job_id: str) -> None:
 
             else:
                 # ---------- Extract structured row ----------
-                # ✅ MUST: pass filename + cfg every file
                 platform, base_row, errors = extract_row_from_text(
                     text,
                     filename=filename,
                     client_tax_id=client_tax_id,
-                    cfg=cfg_for_file,
+                    cfg=cfg,
                 )
                 platform_u = _norm_platform(platform) or "UNKNOWN"
 
@@ -778,10 +789,6 @@ def process_job_files(job_service, job_id: str) -> None:
                     except Exception:
                         wallet_code = ""
 
-                # Company name fallback (if you want company name column always filled)
-                if not company and client_tax_id:
-                    company = _company_from_tax_id(client_tax_id, filename)
-
                 row: Dict[str, Any] = {
                     "A_seq": seq,
                     "A_company_name": company,
@@ -794,12 +801,14 @@ def process_job_files(job_service, job_id: str) -> None:
                 if isinstance(base_row, dict):
                     row.update(base_row)
 
+                # wallet
                 if wallet_code:
                     row["Q_payment_method"] = wallet_code
 
+                # Normalize first (clean)
                 _normalize_row_fields(row, seq=seq)
 
-                # ✅ LOCK BEFORE AI
+                # ✅ LOCK fields (doc+ref, desc, account) BEFORE AI
                 _apply_locked_fields(row, filename=filename, platform_u=platform_u, text=text, client_tax_id=client_tax_id)
 
                 # ---------- Optional AI patch ----------
@@ -860,17 +869,21 @@ def process_job_files(job_service, job_id: str) -> None:
                                     if _safe_str(row.get(k)) in {"", "0", "0.0", "0.00"}:
                                         row[k] = v_str
 
+                # re-apply wallet (wallet wins)
                 if wallet_code:
                     row["Q_payment_method"] = wallet_code
 
+                # ✅ normalize again
                 _normalize_row_fields(row, seq=seq)
 
-                # ✅ re-lock again after AI
+                # ✅ re-lock again (AI ห้ามทำให้ ref/desc/account เพี้ยน)
                 _apply_locked_fields(row, filename=filename, platform_u=platform_u, text=text, client_tax_id=client_tax_id)
 
+                # ---------- Validation ----------
                 errors2 = _revalidate(row)
                 row["_errors"] = _merge_unique_errors(list(row.get("_errors") or []), errors2)
 
+                # ---------- Backend filtering result ----------
                 if is_mismatch:
                     row["_status"] = "NEEDS_REVIEW"
                     row["_status_reason"] = "filter_mismatch"

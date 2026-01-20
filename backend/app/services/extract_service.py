@@ -102,23 +102,14 @@ PLATFORM_DESCRIPTIONS = {
 # ============================================================
 # Client constants (ตามที่คุณใช้ใน UI)
 # ============================================================
-
 CLIENT_RABBIT = "0105561071873"
-CLIENT_SHD = "0105563022918"
+CLIENT_SHD    = "0105563022918"
 CLIENT_TOPONE = "0105565027615"
 
 DEFAULT_COMPANY_NAME_BY_TAX = {
     CLIENT_RABBIT: "RABBIT",
     CLIENT_SHD: "SHD",
     CLIENT_TOPONE: "TOPONE",
-}
-
-# tag -> tax id (ใช้ตอน cfg มีหลายบริษัท)
-CLIENT_TAX_BY_TAG = {
-    "RABBIT": CLIENT_RABBIT,
-    "SHD": CLIENT_SHD,
-    "TOPONE": CLIENT_TOPONE,
-    # HASHTAG: ไม่ทราบเลขภาษี -> ปล่อยว่าง
 }
 
 # ============================================================
@@ -169,10 +160,8 @@ RE_LEADING_NOISE_PREFIX = re.compile(
     re.IGNORECASE,
 )
 
-
 def _strip_ext(s: str) -> str:
     return re.sub(r"\.(pdf|png|jpg|jpeg|xlsx|xls)$", "", s, flags=re.IGNORECASE).strip()
-
 
 # ============================================================
 # helpers: sanitize / merge / compact
@@ -181,14 +170,12 @@ def _strip_ext(s: str) -> str:
 def _sanitize_incoming_row(d: Any) -> Dict[str, Any]:
     return d if isinstance(d, dict) else {}
 
-
 def _compact_no_ws(v: Any) -> str:
     s = "" if v is None else str(v)
     s = s.strip()
     if not s:
         return ""
     return _RE_ALL_WS.sub("", s)
-
 
 def _normalize_reference_core(value: Any) -> str:
     """
@@ -212,7 +199,6 @@ def _normalize_reference_core(value: Any) -> str:
     s2 = _strip_ext(s2)
     return _compact_no_ws(s2) if s2 else _compact_no_ws(s)
 
-
 def _try_get_source_filename(filename: str, row: Dict[str, Any]) -> str:
     """
     ใช้ filename ที่ส่งเข้ามาเป็นหลัก ถ้าไม่มีค่อยดูใน meta ของ row
@@ -231,7 +217,6 @@ def _try_get_source_filename(filename: str, row: Dict[str, Any]) -> str:
             except Exception:
                 return str(v)
     return ""
-
 
 def _sanitize_ai_row(ai: Dict[str, Any]) -> Dict[str, Any]:
     if not ai:
@@ -255,7 +240,6 @@ def _sanitize_ai_row(ai: Dict[str, Any]) -> Dict[str, Any]:
 
     return cleaned
 
-
 def _merge_rows(base: Dict[str, Any], patch: Dict[str, Any], *, fill_missing: bool = True) -> Dict[str, Any]:
     if not patch:
         return base
@@ -274,7 +258,6 @@ def _merge_rows(base: Dict[str, Any], patch: Dict[str, Any], *, fill_missing: bo
         else:
             out[k] = v
     return out
-
 
 # ============================================================
 # helpers: validation
@@ -305,82 +288,6 @@ def _validate_row(row: Dict[str, Any]) -> List[str]:
         errors.append("อัตราภาษีไม่ถูกต้อง")
 
     return errors
-
-
-# ============================================================
-# ✅ client tax resolve: support client_tax_id + client_tax_ids(list) + client_tags
-# ============================================================
-
-def _as_list(v: Any) -> List[str]:
-    if v is None:
-        return []
-    if isinstance(v, list):
-        out: List[str] = []
-        for x in v:
-            s = str(x).strip()
-            if s:
-                out.append(s)
-        return out
-    s = str(v).strip()
-    if not s:
-        return []
-    # try JSON list string
-    if (s.startswith("[") and s.endswith("]")) or (s.startswith('"') and s.endswith('"')):
-        try:
-            j = __import__("json").loads(s)
-            if isinstance(j, list):
-                return [str(x).strip() for x in j if str(x).strip()]
-            if isinstance(j, str) and j.strip():
-                return [j.strip()]
-        except Exception:
-            pass
-    # comma separated
-    if "," in s:
-        return [x.strip() for x in s.split(",") if x.strip()]
-    return [s]
-
-
-def _resolve_client_tax_id_from_cfg(cfg: Dict[str, Any], *, filename: str = "", text: str = "") -> str:
-    """
-    รองรับ:
-      - cfg["client_tax_id"] (string)
-      - cfg["client_tax_ids"] (list/str)
-      - cfg["client_tags"] (list/str) -> map เป็น tax id (RABBIT/SHD/TOPONE)
-    """
-    cfg = cfg or {}
-
-    # 1) explicit single
-    c1 = str(cfg.get("client_tax_id") or "").strip()
-    if c1:
-        return c1
-
-    # 2) list
-    ids = _as_list(cfg.get("client_tax_ids"))
-    if len(ids) == 1:
-        return ids[0].strip()
-
-    # 3) if multiple ids: try use client_tags -> tax
-    tags = [t.upper().strip() for t in _as_list(cfg.get("client_tags"))]
-    for t in tags:
-        tax = CLIENT_TAX_BY_TAG.get(t)
-        if tax and tax in ids:
-            return tax
-
-    # 4) if still multiple: fallback first
-    if ids:
-        return ids[0].strip()
-
-    # 5) last: detect from context (optional)
-    if detect_client_from_context is not None:
-        try:
-            c = (detect_client_from_context(text) or "").strip()
-            if c:
-                return c
-        except Exception:
-            pass
-
-    return ""
-
 
 # ============================================================
 # extractor call (backward compatible) + MUST PASS filename+cfg
@@ -424,7 +331,6 @@ def _safe_call_extractor(
 
     return fn(text)  # type: ignore
 
-
 # ============================================================
 # Vendor mapping: force D_vendor_code = Cxxxxx
 # ============================================================
@@ -461,7 +367,6 @@ def _apply_vendor_code_mapping(row: Dict[str, Any], text: str, client_tax_id: st
             row["_vendor_code_resolved"] = code
 
     return row
-
 
 # ============================================================
 # Platform-specific enforcement (กลาง)
@@ -500,7 +405,6 @@ def _enforce_platform_rules(row: Dict[str, Any], platform: str) -> Dict[str, Any
 
     return row
 
-
 # ============================================================
 # LOCK schema A–U (กันคอลัมน์เลื่อน)
 # ============================================================
@@ -518,147 +422,25 @@ def lock_peak_columns(row: Dict[str, Any]) -> Dict[str, Any]:
 
     return out
 
-
-# ============================================================
-# ✅ WHT policy helpers (✅/❌ คำนวณภาษีหัก ณ ที่จ่าย)
-# ============================================================
-
-def _to_float(v: Any) -> float:
-    if v is None:
-        return 0.0
-    if isinstance(v, (int, float)):
-        return float(v)
-    s = str(v).strip()
-    if not s:
-        return 0.0
-    s = s.replace(",", "")
-    try:
-        return float(s)
-    except Exception:
-        return 0.0
-
-
-def _fmt_2(v: float) -> str:
-    # เก็บแบบ "8716.68" (ไม่ใส่ comma)
-    try:
-        return f"{float(v):.2f}"
-    except Exception:
-        return "0.00"
-
-
-def _parse_vat_rate(v: Any) -> float:
-    """
-    รับ "7%" -> 0.07, "NO" -> 0.0, 7 -> 0.07, 0.07 -> 0.07
-    """
-    if v is None:
-        return 0.0
-    s = str(v).strip().upper()
-    if not s:
-        return 0.0
-    if s in ("NO", "NONE", "0", "0%", "EXEMPT"):
-        return 0.0
-    if s.endswith("%"):
-        return _to_float(s[:-1]) / 100.0
-    x = _to_float(s)
-    if x > 1.0:
-        return x / 100.0
-    return x
-
-
-def _truthy(v: Any) -> bool:
-    """
-    รองรับหลายรูปแบบ:
-    True/False, 1/0, "1"/"0", "true"/"false", "yes"/"no", "✅"/"❌"
-    """
-    if v is None:
-        return False
-    if isinstance(v, bool):
-        return v
-    s = str(v).strip().lower()
-    if s in ("1", "true", "yes", "y", "on", "enable", "enabled", "✅"):
-        return True
-    if s in ("0", "false", "no", "n", "off", "disable", "disabled", "❌"):
-        return False
-    return False
-
-
-def _apply_wht_policy(row: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    cfg parameters:
-      - calculate_wht: True/False (หรือ "1"/"0")
-      - wht_rate: default 0.03
-      - pnd_when_wht: default "1"
-      - pnd_when_no_wht: default "53"
-      - wht_base_mode:
-          "paid_includes_vat" (default) => base = paid/(1+vat)
-          "paid_excludes_vat"            => base = paid
-    สูตรที่เข้ากับรูปคุณ:
-      WHT = paid * rate / (1 + vat)   (เมื่อ paid เป็นยอดรวม VAT)
-    """
-    cfg = cfg or {}
-    enabled = _truthy(cfg.get("calculate_wht", cfg.get("wht_enabled")))
-    try:
-        rate_f = float(cfg.get("wht_rate", 0.03))
-    except Exception:
-        rate_f = 0.03
-
-    pnd_when_wht = str(cfg.get("pnd_when_wht", "1")).strip() or "1"
-    pnd_when_no = str(cfg.get("pnd_when_no_wht", "53")).strip() or "53"
-    base_mode = str(cfg.get("wht_base_mode", "paid_includes_vat")).strip().lower() or "paid_includes_vat"
-
-    if not enabled:
-        # ❌ ไม่คำนวณภาษีหัก ณ ที่จ่าย
-        # (ถ้าคุณอยาก "ไม่ล้าง" แล้วให้กรอกเอง: เปลี่ยนเป็น: row["P_wht"] = str(row.get("P_wht") or "").strip()
-        row["P_wht"] = ""
-        if not str(row.get("S_pnd") or "").strip():
-            row["S_pnd"] = pnd_when_no
-        return row
-
-    # ✅ คำนวณภาษีหัก ณ ที่จ่าย
-    paid = _to_float(row.get("R_paid_amount"))
-    vat = _parse_vat_rate(row.get("O_vat_rate"))
-
-    cur_wht = str(row.get("P_wht") or "").strip()
-    if (not cur_wht) and paid > 0:
-        if base_mode == "paid_excludes_vat":
-            base = paid
-        else:
-            base = paid / (1.0 + vat) if vat > 0 else paid
-        wht_amount = base * rate_f
-        if wht_amount < 0:
-            wht_amount = 0.0
-        row["P_wht"] = _fmt_2(round(wht_amount, 2))
-
-    if not str(row.get("S_pnd") or "").strip():
-        row["S_pnd"] = pnd_when_wht
-
-    return row
-
-
 # ============================================================
 # ✅ Finalize helpers: company, GL code, description structure
 # ============================================================
 
 def _resolve_client_tax_id(text: str, client_tax_id: str, cfg: Dict[str, Any]) -> str:
-    """
-    ✅ FIX: รองรับ cfg หลายรูปแบบ
-      - client_tax_id
-      - client_tax_ids (list/str) -> ถ้ามีตัวเดียวใช้เลย / ถ้ามีหลายตัวเลือกตาม tag หรือ fallback ตัวแรก
-    """
     ctax = (client_tax_id or "").strip()
     if ctax:
         return ctax
-
-    ctax = _resolve_client_tax_id_from_cfg(
-        cfg,
-        filename=cfg.get("_filename", "") if isinstance(cfg, dict) else "",
-        text=text,
-    )
+    # allow cfg override
+    ctax = str(cfg.get("client_tax_id") or "").strip()
     if ctax:
         return ctax
-
-    return ""
-
+    # detect from context (optional)
+    if detect_client_from_context is not None:
+        try:
+            ctax = (detect_client_from_context(text) or "").strip()
+        except Exception:
+            ctax = ""
+    return ctax
 
 def _resolve_company_name(client_tax_id: str, cfg: Dict[str, Any]) -> str:
     # cfg override
@@ -678,15 +460,15 @@ def _resolve_company_name(client_tax_id: str, cfg: Dict[str, Any]) -> str:
 
     return DEFAULT_COMPANY_NAME_BY_TAX.get(client_tax_id, "")
 
-
 def _resolve_gl_code(client_tax_id: str, platform: str, row: Dict[str, Any], cfg: Dict[str, Any]) -> str:
     """
     เติม K_account ให้ครบ:
-    - cfg["gl_code_map"] รองรับ:
-        1) {"0105...": "520317"}
-        2) {"0105...": {"MARKETPLACE":"520317","ADS":"520201","DEFAULT":"520203"}}
+    - แนะนำให้ใส่ cfg["gl_code_map"] เป็น dict
+      รูปแบบรองรับ:
+        1) {"0105...": "GLxxx"}  (ใช้ร่วมทุก platform)
+        2) {"0105...": {"MARKETPLACE":"...", "ADS":"...", "DEFAULT":"..."}} (ละเอียด)
     - หรือ env: GL_CODE_RABBIT/SHD/TOPONE
-    - ถ้าไม่มีจริงๆ fallback เป็น U_group เพื่อไม่ให้ K_account ว่าง
+    - ถ้าไม่มีจริงๆ จะ fallback เป็น U_group เพื่อไม่ให้ K_account ว่าง
     """
     # 1) cfg map
     mp = cfg.get("gl_code_map")
@@ -718,19 +500,19 @@ def _resolve_gl_code(client_tax_id: str, platform: str, row: Dict[str, Any], cfg
     grp = str(row.get("U_group") or "").strip()
     return grp
 
-
 def _guess_seller_id(row: Dict[str, Any], text: str) -> str:
+    # common keys from scrapers/extractors
     for k in ("seller_id", "sellerId", "shop_id", "shopid", "shopId", "merchant_id", "merchantId"):
         v = row.get(k)
         if v:
             s = str(v).strip()
             if s:
                 return s
+    # attempt from text
     m = re.search(r"(?:seller\s*id|shop\s*id)\s*[:#]?\s*([0-9]{4,})", text, flags=re.IGNORECASE)
     if m:
         return m.group(1).strip()
     return ""
-
 
 def _guess_username(row: Dict[str, Any], text: str) -> str:
     for k in ("username", "user_name", "seller_username", "shop_name", "shopName", "sellerName"):
@@ -744,7 +526,6 @@ def _guess_username(row: Dict[str, Any], text: str) -> str:
         return m.group(1).strip()
     return ""
 
-
 def _build_description_structure(
     base_desc: str,
     platform: str,
@@ -752,6 +533,9 @@ def _build_description_structure(
     username: str,
     src_file: str,
 ) -> str:
+    """
+    Desc structure: คง base_desc เดิม แล้ว append tags ที่คุณต้องการ
+    """
     parts: List[str] = []
     bd = (base_desc or "").strip()
     if not bd:
@@ -772,7 +556,6 @@ def _build_description_structure(
 
     return " — ".join([p for p in parts if p.strip()]).strip()
 
-
 # ============================================================
 # ✅ FINALIZE (THE IMPORTANT PART)
 # ============================================================
@@ -786,6 +569,17 @@ def finalize_row(
     client_tax_id: str,
     cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """
+    ทำให้ stable + import-safe:
+    - A_company_name เติมตาม client_tax_id
+    - O_vat_rate เติมตาม platform (Ads=NO / Marketplace=7%)
+    - P_wht: ไม่ล้างทิ้ง (ถ้าไม่มีให้เป็น "")
+    - C_reference/G_invoice_no: normalize ให้เหลือ TRS... (ตัด Shopee-TIV-) + sync กัน
+    - L_description: ตาม Desc structure + SellerID/Username/File
+    - K_account: เติม GL code ตามบริษัท (cfg/env) ถ้าไม่มี fallback เป็น group
+    - T_note: policy ต้องว่าง
+    - lock schema A–U กันคอลัมน์เลื่อน
+    """
     row = _sanitize_incoming_row(row)
     p = (platform or "UNKNOWN").upper().strip()
     cfg = cfg or {}
@@ -793,7 +587,7 @@ def finalize_row(
     # policy: T_note must be empty
     row["T_note"] = ""
 
-    # resolve client tax id + company (✅ FIX)
+    # resolve client tax id + company
     ctax = _resolve_client_tax_id(text, client_tax_id, cfg)
     if ctax and not str(row.get("A_company_name") or "").strip():
         row["A_company_name"] = _resolve_company_name(ctax, cfg)
@@ -801,7 +595,7 @@ def finalize_row(
     # enforce platform rules (group/desc/vat defaults)
     row = _enforce_platform_rules(row, p)
 
-    # ✅ keep P_wht (don't wipe). Ensure exists (ก่อน policy จะจัดการ)
+    # ✅ keep P_wht (don't wipe). Ensure exists
     if row.get("P_wht") is None:
         row["P_wht"] = ""
     else:
@@ -817,6 +611,7 @@ def finalize_row(
     row["C_reference"] = best_ref
     row["G_invoice_no"] = best_ref
 
+    # also compact no-ws again (safety)
     row["C_reference"] = _compact_no_ws(row.get("C_reference", ""))
     row["G_invoice_no"] = _compact_no_ws(row.get("G_invoice_no", ""))
 
@@ -833,7 +628,7 @@ def finalize_row(
         src_file=src_file,
     )
 
-    # ✅ GL code fill (✅ FIX: now ctax resolves from cfg too)
+    # ✅ GL code fill
     if not str(row.get("K_account") or "").strip():
         row["K_account"] = _resolve_gl_code(ctax, p, row, cfg)
 
@@ -844,15 +639,9 @@ def finalize_row(
     if not str(row.get("O_vat_rate") or "").strip():
         row["O_vat_rate"] = "NO" if p in ("META", "GOOGLE") else "7%"
 
-    # ✅ APPLY PARAM: calculate_wht (✅/❌)
-    # - ✅: เติม P_wht จาก R_paid_amount และ set S_pnd = cfg.pnd_when_wht (default "1")
-    # - ❌: ล้าง P_wht และ set S_pnd = cfg.pnd_when_no_wht (default "53")
-    row = _apply_wht_policy(row, cfg)
-
     # lock schema
     row = lock_peak_columns(row)
     return row
-
 
 def _record_ai_error(row: Dict[str, Any], stage: str, exc: Exception) -> None:
     if os.getenv("STORE_AI_ERROR_META", "1") != "1":
@@ -864,7 +653,6 @@ def _record_ai_error(row: Dict[str, Any], stage: str, exc: Exception) -> None:
         arr = []
     arr.append(msg)
     row["_ai_errors"] = arr
-
 
 # ============================================================
 # Platform normalization mapping: classifier -> router
@@ -878,31 +666,26 @@ def _normalize_platform_label(platform_raw: str) -> str:
         return "GENERIC"
     return "GENERIC"
 
-
 # ============================================================
-# 🔥 MAIN CORE FUNCTION (ตัวจริง)
+# 🔥 MAIN ENTRY
 # ============================================================
 
-def extract_row(
+def extract_row_from_text(
     text: str,
     filename: str = "",
     client_tax_id: str = "",
     cfg: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Dict[str, Any], List[str]]:
     """
-    ✅ ตัวจริง: แนะนำให้ส่วนอื่นในระบบใช้ชื่อ extract_row เป็นหลัก
     ✅ MUST PASS filename + cfg ลงไปถึง extractor ทุกตัว
-    ✅ FIX: resolve client_tax_id from cfg (client_tax_ids/list) before finalize/vendor-map
+
+    Returns:
+        (platform_for_job_worker, row, errors)
     """
     text = text or ""
     filename = filename or ""
     client_tax_id = (client_tax_id or "").strip()
     cfg = cfg or {}
-
-    # ✅ FIX (A): resolve tax from cfg if empty / list
-    resolved_tax = client_tax_id or _resolve_client_tax_id_from_cfg(cfg, filename=filename, text=text)
-    if resolved_tax:
-        client_tax_id = resolved_tax
 
     # 1) classify
     try:
@@ -929,33 +712,21 @@ def extract_row(
         if platform_route == "META":
             if _META_EXTRACTOR_OK and extract_meta_ads is not None:
                 row = _safe_call_extractor(
-                    extract_meta_ads,
-                    text,
-                    filename=filename,
-                    client_tax_id=client_tax_id,
-                    cfg=cfg,
-                    platform_hint="META",
+                    extract_meta_ads, text,
+                    filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="META",
                 )
                 row["_extraction_method"] = "rule_based_meta"
             else:
                 if _AI_OK and extract_with_ai is not None:
                     row = _safe_call_extractor(
-                        extract_with_ai,
-                        text,
-                        filename=filename,
-                        client_tax_id=client_tax_id,
-                        cfg=cfg,
-                        platform_hint="META",
+                        extract_with_ai, text,
+                        filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="META",
                     )
                     row["_extraction_method"] = "ai_meta_fallback"
                 else:
                     row = _safe_call_extractor(
-                        extract_generic,
-                        text,
-                        filename=filename,
-                        client_tax_id=client_tax_id,
-                        cfg=cfg,
-                        platform_hint="META",
+                        extract_generic, text,
+                        filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="META",
                     )
                     row["_extraction_method"] = "generic_meta_fallback"
                     row["_missing_extractor"] = "meta"
@@ -963,89 +734,57 @@ def extract_row(
         elif platform_route == "GOOGLE":
             if _GOOGLE_EXTRACTOR_OK and extract_google_ads is not None:
                 row = _safe_call_extractor(
-                    extract_google_ads,
-                    text,
-                    filename=filename,
-                    client_tax_id=client_tax_id,
-                    cfg=cfg,
-                    platform_hint="GOOGLE",
+                    extract_google_ads, text,
+                    filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="GOOGLE",
                 )
                 row["_extraction_method"] = "rule_based_google"
             else:
                 if _AI_OK and extract_with_ai is not None:
                     row = _safe_call_extractor(
-                        extract_with_ai,
-                        text,
-                        filename=filename,
-                        client_tax_id=client_tax_id,
-                        cfg=cfg,
-                        platform_hint="GOOGLE",
+                        extract_with_ai, text,
+                        filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="GOOGLE",
                     )
                     row["_extraction_method"] = "ai_google_fallback"
                 else:
                     row = _safe_call_extractor(
-                        extract_generic,
-                        text,
-                        filename=filename,
-                        client_tax_id=client_tax_id,
-                        cfg=cfg,
-                        platform_hint="GOOGLE",
+                        extract_generic, text,
+                        filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="GOOGLE",
                     )
                     row["_extraction_method"] = "generic_google_fallback"
                     row["_missing_extractor"] = "google"
 
         elif platform_route == "SHOPEE":
             row = _safe_call_extractor(
-                extract_shopee,
-                text,
-                filename=filename,
-                client_tax_id=client_tax_id,
-                cfg=cfg,
-                platform_hint="SHOPEE",
+                extract_shopee, text,
+                filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="SHOPEE",
             )
             row["_extraction_method"] = "rule_based_shopee"
 
         elif platform_route == "LAZADA":
             row = _safe_call_extractor(
-                extract_lazada,
-                text,
-                filename=filename,
-                client_tax_id=client_tax_id,
-                cfg=cfg,
-                platform_hint="LAZADA",
+                extract_lazada, text,
+                filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="LAZADA",
             )
             row["_extraction_method"] = "rule_based_lazada"
 
         elif platform_route == "TIKTOK":
             row = _safe_call_extractor(
-                extract_tiktok,
-                text,
-                filename=filename,
-                client_tax_id=client_tax_id,
-                cfg=cfg,
-                platform_hint="TIKTOK",
+                extract_tiktok, text,
+                filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="TIKTOK",
             )
             row["_extraction_method"] = "rule_based_tiktok"
 
         elif platform_route == "SPX":
             if _SPX_EXTRACTOR_OK and extract_spx is not None:
                 row = _safe_call_extractor(
-                    extract_spx,
-                    text,
-                    filename=filename,
-                    client_tax_id=client_tax_id,
-                    cfg=cfg,
-                    platform_hint="SPX",
+                    extract_spx, text,
+                    filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="SPX",
                 )
                 row["_extraction_method"] = "rule_based_spx"
             else:
                 row = _safe_call_extractor(
-                    extract_generic,
-                    text,
-                    filename=filename,
-                    client_tax_id=client_tax_id,
-                    cfg=cfg,
-                    platform_hint="SPX",
+                    extract_generic, text,
+                    filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="SPX",
                 )
                 row["_extraction_method"] = "generic_spx_fallback"
                 row["_missing_extractor"] = "spx"
@@ -1053,33 +792,21 @@ def extract_row(
         elif platform_route == "THAI_TAX":
             if _AI_OK and extract_with_ai is not None:
                 row = _safe_call_extractor(
-                    extract_with_ai,
-                    text,
-                    filename=filename,
-                    client_tax_id=client_tax_id,
-                    cfg=cfg,
-                    platform_hint="THAI_TAX",
+                    extract_with_ai, text,
+                    filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="THAI_TAX",
                 )
                 row["_extraction_method"] = "ai_thai_tax"
             else:
                 row = _safe_call_extractor(
-                    extract_generic,
-                    text,
-                    filename=filename,
-                    client_tax_id=client_tax_id,
-                    cfg=cfg,
-                    platform_hint="THAI_TAX",
+                    extract_generic, text,
+                    filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="THAI_TAX",
                 )
                 row["_extraction_method"] = "generic_thai_tax_fallback"
 
         else:
             row = _safe_call_extractor(
-                extract_generic,
-                text,
-                filename=filename,
-                client_tax_id=client_tax_id,
-                cfg=cfg,
-                platform_hint="GENERIC",
+                extract_generic, text,
+                filename=filename, client_tax_id=client_tax_id, cfg=cfg, platform_hint="GENERIC",
             )
             row["_extraction_method"] = "generic"
 
@@ -1091,7 +818,7 @@ def extract_row(
 
     row = _sanitize_incoming_row(row)
 
-    # 2.1 minimal defaults
+    # 2.1 minimal defaults (อย่าบังคับค่าแบบทำลายของ extractor)
     row.setdefault("A_seq", "")
     if row.get("M_qty") in ("", None):
         row["M_qty"] = "1"
@@ -1132,7 +859,7 @@ def extract_row(
             logger.warning("AI enhancement failed (file=%s): %s", filename, e)
             _record_ai_error(row, "ai_enhance", e)
 
-    # 4) validate
+    # 4) validate (ก่อน finalize เพื่อดู error เดิม)
     errors = _validate_row(row)
 
     # 5) optional AI repair pass if errors
@@ -1160,13 +887,10 @@ def extract_row(
             logger.warning("AI repair failed (file=%s): %s", filename, e)
             _record_ai_error(row, "ai_repair", e)
 
-    # ✅ FIX: refresh client_tax_id again (บาง extractor อาจตั้งค่าใน cfg/row)
-    client_tax_id = (client_tax_id or "").strip() or _resolve_client_tax_id_from_cfg(cfg, filename=filename, text=text)
-
-    # 6) vendor mapping pass (force Cxxxxx) (ใช้ client_tax_id ที่ resolve แล้ว)
+    # 6) vendor mapping pass (force Cxxxxx)
     row = _apply_vendor_code_mapping(row, text, client_tax_id)
 
-    # 7) ✅ FINALIZE + LOCK (MUST PASS cfg + filename)
+    # 7) ✅ FINALIZE + LOCK (นี่คือสิ่งที่ทำให้ import ไม่พัง)
     row = finalize_row(
         row,
         platform=platform_out,
@@ -1179,27 +903,8 @@ def extract_row(
     return platform_out, row, errors
 
 
-# ============================================================
-# ✅ ALIAS (ตัวที่ job_worker import ต้องเจอชื่อนี้แน่นอน)
-# ============================================================
-
-def extract_row_from_text(
-    text: str,
-    filename: str = "",
-    client_tax_id: str = "",
-    cfg: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, Dict[str, Any], List[str]]:
-    """
-    ✅ Backward-compatible alias:
-    job_worker.py does:
-      from .extract_service import extract_row_from_text
-    """
-    return extract_row(text, filename=filename, client_tax_id=client_tax_id, cfg=cfg)
-
-
 __all__ = [
-    "extract_row",  # ✅ new canonical
-    "extract_row_from_text",  # ✅ backward-compatible
+    "extract_row_from_text",
     "finalize_row",
     "PEAK_KEYS_ORDER",
     "PLATFORM_GROUPS",

@@ -1,15 +1,14 @@
-# -*- coding: utf-8 -*-
-# backend/app/main.py
 from __future__ import annotations
 
 import io
 import os
 import json
 import time
+import uuid
 import inspect
 import logging
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -108,19 +107,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if v is None:
         return default
     return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-def _parse_bool_field(raw: Optional[str], default: bool) -> bool:
-    """
-    Parse bool from FormData/str:
-      - "1/0", "true/false", "yes/no", "on/off"
-      - None/"" => default
-    """
-    if raw is None:
-        return default
-    s = str(raw).strip().lower()
-    if s == "":
-        return default
-    return s in {"1", "true", "yes", "y", "on"}
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -327,18 +313,12 @@ async def upload(
     client_tags: Optional[str] = Form(None),
     client_tax_ids: Optional[str] = Form(None),
     platforms: Optional[str] = Form(None),
-
-    # ✅ NEW: compute_wht toggle from request
-    # - True  => คำนวณภาษีหัก ณ ที่จ่าย (บังคับ P_wht/S_pnd ถ้ามี WHT)
-    # - False => ไม่คำนวณ/ไม่ใส่ (P_wht=0, S_pnd="")
-    compute_wht: Optional[str] = Form(None),
 ):
     """
     Upload multiple PDFs/images and process as a job.
 
     ✅ Robustness:
-    - parse cfg from FormData (client/platform)
-    - ✅ receive compute_wht and put into cfg
+    - parse cfg from FormData
     - enforce limits (max files, max per-file size)
     - never create "empty job" (prevents UI state=error / rows=0)
     - pass filename everywhere
@@ -348,11 +328,6 @@ async def upload(
         raise HTTPException(status_code=400, detail="No files uploaded")
 
     cfg = _normalize_cfg(client_tags, client_tax_ids, platforms)
-
-    # ✅ compute_wht into cfg (default True to match your requirement)
-    # You can change default by ENV COMPUTE_WHT_DEFAULT=0/1
-    default_compute = _env_bool("COMPUTE_WHT_DEFAULT", default=True)
-    cfg["compute_wht"] = _parse_bool_field(compute_wht, default=default_compute)
 
     # keep only allowed platforms
     if cfg.get("platforms"):
@@ -376,13 +351,11 @@ async def upload(
     for f in files:
         filename = _safe_filename(f.filename or "")
 
+        # basic type check (optional but useful)
         ctype = (f.content_type or "").lower()
         # accept unknown, pdf, images
-        if ctype and not (
-            ctype.startswith("application/pdf")
-            or ctype.startswith("image/")
-            or ctype == "application/octet-stream"
-        ):
+        if ctype and not (ctype.startswith("application/pdf") or ctype.startswith("image/") or ctype == "application/octet-stream"):
+            # don't hard fail; just skip
             skipped += 1
             reasons.append(f"skip:{filename}:unsupported_content_type:{ctype}")
             continue
@@ -400,15 +373,13 @@ async def upload(
             filename=filename,
             content_type=f.content_type or "",
             content=content,
-            cfg=cfg,  # ✅ includes compute_wht now
+            cfg=cfg,  # optional
         )
         added += 1
 
     if added == 0:
-        raise HTTPException(
-            status_code=400,
-            detail={"message": "All uploaded files were invalid/empty", "reasons": reasons[:50]},
-        )
+        # ensure no "job with zero files" (UI will show rows=0/state=error)
+        raise HTTPException(status_code=400, detail={"message": "All uploaded files were invalid/empty", "reasons": reasons[:50]})
 
     # start processing (attach cfg if supported)
     _call_if_supported(jobs, "start_processing", job_id, cfg=cfg)

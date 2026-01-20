@@ -3,7 +3,7 @@
 """
 Common utilities and patterns for invoice extraction
 Enhanced with AI-ready patterns for better accuracy
-Version 3.3.2 (Finalize Row: client_tax_ids + compute_wht enforcement)
+Version 3.3.1 (Post-process Central Enforcer + Finalize Row Fix + XLSX Columns Safe)
 
 ⭐ Fixes / requirements covered
 ✅ 1) เพิ่ม/คงไว้ finalize_row (กัน ImportError)
@@ -11,8 +11,6 @@ Version 3.3.2 (Finalize Row: client_tax_ids + compute_wht enforcement)
 ✅ 3) C_reference / G_invoice_no บังคับเป็นเลขจาก filename แบบ "TRS...." (ตัด Shopee-TIV- ฯลฯ)
 ✅ 4) L_description ตาม Desc structure + ใส่ Seller ID / Username / File
 ✅ 5) K_account เติม GL Code ให้ครบ SHD/Rabbit/TopOne (รวม ads_canva ให้ครบ)
-✅ 6) NEW: finalize_row ดึง client_tax_id ได้จาก client_tax_ids (list/str) + รองรับหลายชื่อ field
-✅ 7) NEW: finalize_row อ่าน compute_wht แล้วบังคับ P_wht/S_pnd (✅คำนวณ / ❌ไม่คำนวณ)
 """
 
 from __future__ import annotations
@@ -912,25 +910,27 @@ def find_payment_method(text: str, platform: str = "") -> str:
 # ✅ Post-process Central Enforcer (C/G + filename + K_account + L_description)
 # ============================================================
 
-CLIENT_SHD     = "0105563022918"
-CLIENT_RABBIT  = "0105561071873"
-CLIENT_TOPONE  = "0105565027615"
+CLIENT_SHD = "0105563022918"
+CLIENT_RABBIT = "0105561071873"
+CLIENT_TOPONE = "0105565027615"
 
-# ========== GL CODE MATRIX (ตามรูป) ==========
+# GL MATRIX (เติมให้ครบ SHD/Rabbit/TopOne)
 GL_MATRIX: Dict[str, Dict[str, str]] = {
     # Marketplace expense
-    "marketplace_shopee": {CLIENT_SHD:"520317", CLIENT_RABBIT:"520315", CLIENT_TOPONE:"520314"},
-    "marketplace_lazada": {CLIENT_SHD:"520318", CLIENT_RABBIT:"520316", CLIENT_TOPONE:"520315"},
-    "marketplace_tiktok": {CLIENT_SHD:"520319", CLIENT_RABBIT:"520317", CLIENT_TOPONE:"520316"},
+    "marketplace_shopee": {CLIENT_SHD: "520317", CLIENT_RABBIT: "520315", CLIENT_TOPONE: "520314"},
+    "marketplace_lazada": {CLIENT_SHD: "520318", CLIENT_RABBIT: "520316", CLIENT_TOPONE: "520315"},
+    "marketplace_tiktok": {CLIENT_SHD: "520319", CLIENT_RABBIT: "520317", CLIENT_TOPONE: "520316"},
 
     # Ads
-    "ads_google":         {CLIENT_SHD:"520201", CLIENT_RABBIT:"520201", CLIENT_TOPONE:"520201"},
-    "ads_meta":           {CLIENT_SHD:"520202", CLIENT_RABBIT:"520202", CLIENT_TOPONE:"520202"},
-    "ads_tiktok":         {CLIENT_SHD:"520223", CLIENT_RABBIT:"520223", CLIENT_TOPONE:"520221"},
-    "ads_canva":          {CLIENT_SHD:"520224", CLIENT_RABBIT:"520224", CLIENT_TOPONE:"520224"},  # ✅ ให้ครบ
+    "ads_google": {CLIENT_SHD: "520201", CLIENT_RABBIT: "520201", CLIENT_TOPONE: "520201"},
+    "ads_meta": {CLIENT_SHD: "520202", CLIENT_RABBIT: "520202", CLIENT_TOPONE: "520202"},
+    "ads_tiktok": {CLIENT_SHD: "520223", CLIENT_RABBIT: "520223", CLIENT_TOPONE: "520221"},
 
-    # Other
-    "online_other":       {CLIENT_SHD:"520203", CLIENT_RABBIT:"520203", CLIENT_TOPONE:"520203"},
+    # ✅ เติมให้ครบ (เดิมมีแค่ SHD)
+    "ads_canva": {CLIENT_SHD: "520224", CLIENT_RABBIT: "520224", CLIENT_TOPONE: "520224"},
+
+    # Other online
+    "online_other": {CLIENT_SHD: "520203", CLIENT_RABBIT: "520203", CLIENT_TOPONE: "520203"},
 }
 
 # Description templates (ตาม structure ที่คุณให้ + seller_id/username/file สำหรับ Shopee marketplace)
@@ -972,7 +972,7 @@ def filename_core(filename: str) -> str:
     base = filename_basename(filename)
     if not base:
         return ""
-    return re.sub(r"\.(pdf|png|jpg|jpeg|xlsx)$", "", base, flags=re.IGNORECASE).strip()
+    return re.sub(r"\.(pdf|png|jpg|jpeg)$", "", base, flags=re.IGNORECASE).strip()
 
 
 def _best_core_from_filename(name_wo_ext: str) -> str:
@@ -1205,53 +1205,6 @@ def post_process_peak_row(
 # ✅ FINALIZER (BACKWARD-COMPAT): finalize_row
 # ============================================================
 
-def _coerce_bool(v: Any, default: Optional[bool] = None) -> Optional[bool]:
-    """Robust bool parser for cfg flags."""
-    if v is None:
-        return default
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)):
-        return bool(int(v))
-    if isinstance(v, str):
-        s = v.strip().lower()
-        if s in ("1", "true", "yes", "y", "on"):
-            return True
-        if s in ("0", "false", "no", "n", "off"):
-            return False
-    return default
-
-
-def _extract_client_tax_id_from_cfg(cfg: Dict[str, Any]) -> str:
-    """
-    ✅ NEW: get client_tax_id from cfg even when UI sends client_tax_ids (list or csv string)
-    Priority:
-      1) cfg.client_tax_id / A_company_tax_id / _client_tax_id
-      2) cfg.client_tax_ids (list/tuple) -> if len==1 use it, else first as fallback
-      3) cfg.client_tax_ids as "a,b,c" -> first
-    """
-    if not cfg:
-        return ""
-
-    direct = str(cfg.get("client_tax_id") or cfg.get("A_company_tax_id") or cfg.get("_client_tax_id") or "").strip()
-    if direct:
-        return direct
-
-    cands = cfg.get("client_tax_ids") or cfg.get("client_tax_id_list") or cfg.get("client_tax") or cfg.get("client_tax_ids[]")
-    if isinstance(cands, (list, tuple)):
-        parts = [str(x).strip() for x in cands if str(x).strip()]
-        if len(parts) == 1:
-            return parts[0]
-        if len(parts) > 1:
-            return parts[0]  # fallback (ถ้าจะทำ per-file mapping ค่อยเพิ่มทีหลัง)
-        return ""
-    if isinstance(cands, str):
-        parts = [p.strip() for p in cands.split(",") if p.strip()]
-        return parts[0] if parts else ""
-
-    return ""
-
-
 def finalize_row(
     row: Dict[str, Any],
     *,
@@ -1269,7 +1222,6 @@ def finalize_row(
     - ถ้ามี filename -> ใช้เลขจาก filename เป็น source-of-truth (ตัด Shopee-TIV- ฯลฯ)
     - เติม K_account + L_description ตาม mapping/template
     - กันคอลัมน์ A_company_name / O_vat_rate / P_wht ไม่หาย (ทำให้มี key เสมอ)
-    - ✅ NEW: รับ client_tax_ids ได้ + compute_wht บังคับ P_wht/S_pnd
     """
     if row is None:
         row = {}
@@ -1282,14 +1234,8 @@ def finalize_row(
         row["O_vat_rate"] = str(cfg.get("vat_rate") or cfg.get("O_vat_rate") or row.get("O_vat_rate") or "7%")
     if "P_wht" not in row:
         row["P_wht"] = str(cfg.get("wht_rate") or cfg.get("P_wht") or row.get("P_wht") or "0")
-    if "S_pnd" not in row:
-        row["S_pnd"] = str(cfg.get("S_pnd") or row.get("S_pnd") or "")
 
-    # ✅ NEW: robust client_tax_id from cfg (supports client_tax_ids)
-    client_tax_id = _extract_client_tax_id_from_cfg(cfg)
-
-    # ✅ NEW: compute_wht flag (default True to keep legacy behavior)
-    compute_wht = _coerce_bool(cfg.get("compute_wht"), default=True)
+    client_tax_id = str(cfg.get("client_tax_id") or cfg.get("A_company_tax_id") or cfg.get("_client_tax_id") or "").strip()
 
     if not platform:
         platform = str(cfg.get("platform") or cfg.get("_platform") or row.get("_platform") or "").strip()
@@ -1342,28 +1288,12 @@ def finalize_row(
         force_filename_reference=force_filename_reference,
     )
 
-    # hard sync + normalize C/G
+    # hard sync + normalize
     c = normalize_reference_no_space(str(row.get("C_reference") or ""))
     g = normalize_reference_no_space(str(row.get("G_invoice_no") or ""))
     v = c or g
     row["C_reference"] = v
     row["G_invoice_no"] = v
-
-    # ✅ NEW: enforce WHT behavior by compute_wht
-    # - ❌ compute_wht=False -> ไม่คำนวณภาษี -> rate=0 และไม่ใส่ ภ.ง.ด.
-    if compute_wht is False:
-        row["P_wht"] = "0"
-        row["S_pnd"] = ""
-
-    # ensure keys again (กันหลุดจาก upstream)
-    if "A_company_name" not in row:
-        row["A_company_name"] = ""
-    if "O_vat_rate" not in row:
-        row["O_vat_rate"] = "7%"
-    if "P_wht" not in row:
-        row["P_wht"] = "0"
-    if "S_pnd" not in row:
-        row["S_pnd"] = ""
 
     return row
 
@@ -1469,8 +1399,6 @@ def format_peak_row(row: Dict[str, Any]) -> Dict[str, Any]:
         formatted["O_vat_rate"] = "7%"
     if "P_wht" not in formatted:
         formatted["P_wht"] = "0"
-    if "S_pnd" not in formatted:
-        formatted["S_pnd"] = ""
 
     return formatted
 
