@@ -4,11 +4,10 @@ import io
 import os
 import json
 import time
-import uuid
 import inspect
 import logging
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,9 +19,6 @@ logger = logging.getLogger(__name__)
 # ✅ Logging defaults (safe)
 # ============================================================
 def _setup_logging() -> None:
-    """
-    Make logging usable out of the box (Render/Railway/Local).
-    """
     level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
     if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
         level = "INFO"
@@ -37,19 +33,14 @@ _setup_logging()
 # ✅ Load .env intelligently
 # ============================================================
 def _load_env_safely() -> None:
-    """
-    โหลด .env แบบฉลาด:
-    - รองรับรันจาก backend/ หรือรันจาก root project
-    - ไม่พังถ้าไม่มี python-dotenv (ยังรันได้ด้วย ENV ของระบบ)
-    """
     try:
         from dotenv import load_dotenv  # type: ignore
     except Exception:
         return
 
     here = Path(__file__).resolve()
-    backend_dir = here.parents[1]          # .../backend/app -> parents[1] = .../backend
-    app_dir = here.parent                 # .../backend/app
+    backend_dir = here.parents[1]
+    app_dir = here.parent
     project_root_guess = backend_dir.parent
 
     candidates = [
@@ -64,7 +55,6 @@ def _load_env_safely() -> None:
             logger.info("Loaded .env: %s", str(p))
             return
 
-    # fallback: search default
     load_dotenv(override=False)
 
 _load_env_safely()
@@ -100,7 +90,7 @@ app.add_middleware(
 jobs = JobService()
 
 # ============================================================
-# ✅ Helpers: safe bool/env + tiny utils
+# ✅ Helpers
 # ============================================================
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.getenv(name)
@@ -108,11 +98,31 @@ def _env_bool(name: str, default: bool = False) -> bool:
         return default
     return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
 
+def _parse_bool_field(raw: Optional[str], default: Optional[bool] = None) -> Optional[bool]:
+    """
+    Accept:
+      - "1"/"0"
+      - "true"/"false"
+      - "yes"/"no"
+      - ""/None
+    Return:
+      - bool or None (if cannot parse and default is None)
+    """
+    if raw is None:
+        return default
+    s = str(raw).strip().lower()
+    if s == "":
+        return default
+    if s in {"1", "true", "yes", "y", "on"}:
+        return True
+    if s in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 def _safe_filename(name: str) -> str:
-    # Keep original for matching but ensure not empty
     n = (name or "").strip()
     return n if n else "unknown"
 
@@ -139,13 +149,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # ✅ Helpers: cfg parsing + safe service call
 # ============================================================
 def _parse_list_field(raw: Optional[str]) -> List[str]:
-    """
-    รองรับ:
-      - JSON string: '["SHD","RABBIT"]'
-      - comma-separated: 'SHD,RABBIT'
-      - single: 'SHD'
-      - empty/None -> []
-    """
     if raw is None:
         return []
     s = str(raw).strip()
@@ -178,13 +181,9 @@ def _normalize_cfg(
     client_tags: Optional[str],
     client_tax_ids: Optional[str],
     platforms: Optional[str],
+    compute_wht: Optional[str],
+    strictMode: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    ทำ cfg ให้สะอาด + normalize ตัวอักษร
-    - client_tags: uppercase (SHD/RABBIT/TOPONE/HASHTAG)
-    - platforms: lowercase (shopee/lazada/tiktok/spx/ads/other/unknown)
-    - client_tax_ids: digits keep as-is (or whatever user sends)
-    """
     tags = [t.upper().strip() for t in _parse_list_field(client_tags)]
     plats = [p.lower().strip() for p in _parse_list_field(platforms)]
     taxs = [t.strip() for t in _parse_list_field(client_tax_ids)]
@@ -198,18 +197,28 @@ def _normalize_cfg(
                 out.append(x)
         return out
 
-    return {
+    cw = _parse_bool_field(compute_wht, default=None)
+    sm = _parse_bool_field(strictMode, default=None)
+
+    cfg: Dict[str, Any] = {
         "client_tags": uniq(tags),
         "client_tax_ids": uniq(taxs),
         "platforms": uniq(plats),
     }
 
+    # ✅ important: compute_wht flag
+    # - If user didn't send: keep None (worker/extractor can decide default)
+    # - If sent: True/False
+    if cw is not None:
+        cfg["compute_wht"] = bool(cw)
+
+    # optional strict mode (if your UI sends it)
+    if sm is not None:
+        cfg["strictMode"] = bool(sm)
+
+    return cfg
+
 def _call_if_supported(obj: Any, method_name: str, /, *args: Any, **kwargs: Any) -> Any:
-    """
-    เรียก method แบบ backward-compatible:
-    - ถ้า method มีพารามิเตอร์ตาม kwargs -> ส่งให้
-    - ถ้าไม่รองรับ -> ตัด kwargs ออกแล้วเรียกแบบเดิม
-    """
     fn = getattr(obj, method_name, None)
     if fn is None:
         raise AttributeError(f"{type(obj).__name__}.{method_name} not found")
@@ -226,10 +235,6 @@ def _call_if_supported(obj: Any, method_name: str, /, *args: Any, **kwargs: Any)
 # ✅ Streaming read with max bytes (prevent RAM blow)
 # ============================================================
 async def _read_uploadfile_safely(f: UploadFile, max_bytes: int) -> bytes:
-    """
-    อ่านไฟล์แบบปลอดภัย + enforce max bytes ระหว่างอ่าน
-    แก้ปัญหาอ่านทั้งก้อนแล้วค่อยเช็ค (ทำให้ RAM พังง่าย)
-    """
     buf = io.BytesIO()
     total = 0
     chunk_size = int(os.getenv("UPLOAD_READ_CHUNK_BYTES", "1048576"))  # 1MB default
@@ -249,7 +254,7 @@ async def _read_uploadfile_safely(f: UploadFile, max_bytes: int) -> bytes:
     return buf.getvalue()
 
 # ============================================================
-# ✅ Minimal platform whitelist (align with your classifier labels)
+# ✅ Minimal platform whitelist
 # ============================================================
 ALLOWED_PLATFORMS = {"shopee", "lazada", "tiktok", "spx", "ads", "other", "unknown"}
 
@@ -258,14 +263,10 @@ ALLOWED_PLATFORMS = {"shopee", "lazada", "tiktok", "spx", "ads", "other", "unkno
 # ============================================================
 @app.get("/api/health")
 def health():
-    """
-    Health check + config summary (ไม่โชว์ secrets)
-    """
     return {
         "ok": True,
         "time_ms": _now_ms(),
         "ai": {
-            # NOTE: your project uses both ENABLE_AI_EXTRACT and ENABLE_LLM in some places
             "enabled": _env_bool("ENABLE_AI_EXTRACT", default=False) or _env_bool("ENABLE_LLM", default=False),
             "provider": os.getenv("AI_PROVIDER", ""),
             "model": os.getenv("OPENAI_MODEL", ""),
@@ -286,9 +287,6 @@ def health():
 
 @app.get("/api/config")
 def config_check():
-    """
-    ตรวจว่า ENV สำคัญมาไหม (ไม่เปิดเผย key จริง)
-    """
     return {
         "ok": True,
         "env": {
@@ -313,25 +311,24 @@ async def upload(
     client_tags: Optional[str] = Form(None),
     client_tax_ids: Optional[str] = Form(None),
     platforms: Optional[str] = Form(None),
+    # ✅ NEW: compute_wht flag from UI
+    compute_wht: Optional[str] = Form(None),
+    # optional: strict mode if UI sends it
+    strictMode: Optional[str] = Form(None),
 ):
-    """
-    Upload multiple PDFs/images and process as a job.
-
-    ✅ Robustness:
-    - parse cfg from FormData
-    - enforce limits (max files, max per-file size)
-    - never create "empty job" (prevents UI state=error / rows=0)
-    - pass filename everywhere
-    - backward-compatible with old/new JobService signatures
-    """
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
-    cfg = _normalize_cfg(client_tags, client_tax_ids, platforms)
+    cfg = _normalize_cfg(client_tags, client_tax_ids, platforms, compute_wht, strictMode=strictMode)
 
     # keep only allowed platforms
     if cfg.get("platforms"):
         cfg["platforms"] = [p for p in cfg["platforms"] if p in ALLOWED_PLATFORMS]
+
+    # If compute_wht not provided -> choose default here (so whole pipeline consistent)
+    # You can flip to False if your default is "ไม่คำนวณ"
+    if "compute_wht" not in cfg:
+        cfg["compute_wht"] = True
 
     # limits
     max_files = int(os.getenv("MAX_UPLOAD_FILES", "500"))
@@ -351,11 +348,12 @@ async def upload(
     for f in files:
         filename = _safe_filename(f.filename or "")
 
-        # basic type check (optional but useful)
         ctype = (f.content_type or "").lower()
-        # accept unknown, pdf, images
-        if ctype and not (ctype.startswith("application/pdf") or ctype.startswith("image/") or ctype == "application/octet-stream"):
-            # don't hard fail; just skip
+        if ctype and not (
+            ctype.startswith("application/pdf")
+            or ctype.startswith("image/")
+            or ctype == "application/octet-stream"
+        ):
             skipped += 1
             reasons.append(f"skip:{filename}:unsupported_content_type:{ctype}")
             continue
@@ -378,8 +376,10 @@ async def upload(
         added += 1
 
     if added == 0:
-        # ensure no "job with zero files" (UI will show rows=0/state=error)
-        raise HTTPException(status_code=400, detail={"message": "All uploaded files were invalid/empty", "reasons": reasons[:50]})
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "All uploaded files were invalid/empty", "reasons": reasons[:50]},
+        )
 
     # start processing (attach cfg if supported)
     _call_if_supported(jobs, "start_processing", job_id, cfg=cfg)
@@ -405,7 +405,6 @@ def get_rows(job_id: str):
     rows = jobs.get_rows(job_id)
     if rows is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    # always return ok true; UI expects rows array
     return {"ok": True, "rows": rows}
 
 @app.get("/api/export/{job_id}.csv")
