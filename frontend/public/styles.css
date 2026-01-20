@@ -1,0 +1,1588 @@
+:root{
+  --bg0:#ffffff;
+  --bg1:#b2e5ffc1;
+  --bg2:rgb(131, 212, 255);
+
+  --card: rgba(255,255,255,.72);
+  --card2: rgba(255,255,255,.56);
+  --stroke: rgba(20,40,90,.12);
+  --stroke2: rgba(20,40,90,.18);
+
+  --text:#0b1733;
+  --muted: rgba(11,23,51,.62);
+
+  --primary:#2563eb;
+  --primary2:#06b6d4;
+
+  --goodBg: rgba(107, 198, 255, 0.14);
+  --warnBg: rgba(104, 139, 255, 0.16);
+
+  --shadow: 0 18px 55px rgba(255, 255, 255, 0.12);
+  --shadow2: 0 10px 28px rgba(10,25,60,.10);
+
+  --r: 18px;
+  --r2: 14px;
+  --r3: 12px;
+
+  --c1: #ffd166;
+  --c2: #3b82f6;
+  --c3: #22c55e;
+  --c4: #a855f7;
+}
+
+*{ box-sizing:border-box; }
+html,body{ height:100%; }
+
+body{
+  margin:0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, "Noto Sans Thai", sans-serif;
+  color:var(--text);
+  background:
+    radial-gradient(1200px 700px at 12% 10%, rgb(255, 255, 255), transparent 55%),
+    radial-gradient(900px 600px at 90% 20%, rgb(255, 255, 255), transparent 55%),
+    radial-gradient(1100px 700px at 55% 90%, rgb(255, 255, 255), transparent 60%),
+    var(--bg0);
+}
+
+a{ color:inherit; }
+.small{ font-size: 12px; }
+.muted{ color: var(--muted); }
+
+.glass{
+  background: var(--card);
+  border: 1px solid var(--stroke);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+}
+
+.app{
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 390px 1fr;
+  gap: 14px;
+  padding: 14px;
+}
+
+.sidebar{
+  border-radius: var(--r);
+  padding: 14px;
+  display:flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* ✅ Upload drop background image (same size, just background) */
+.drop.dropPhoto{
+  position: relative;
+  overflow: hidden;
+  background-image: url("https://i.pinimg.com/originals/a0/d0/4a/a0d04ac638aa46b4612e16ec08f65437.gif");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  border: 1px dashed rgba(20,40,90,.25);
+}
+
+/* soft glass overlay so text stays readable */
+.drop.dropPhoto::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:
+    radial-gradient(800px 260px at 30% 20%, rgba(255, 255, 255, 0.094), rgba(255, 255, 255, 0.185) 60%, rgba(255,255,255,.18)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.119));
+  pointer-events:none;
+}
+
+/* make content above overlay */
+.drop.dropPhoto .dropInner{
+  position: relative;
+  z-index: 1;
+}
+
+/* OPTIONAL: hover highlight still works */
+.drop.dropPhoto.isOver{
+  border-color: rgba(255, 255, 255, 0.45);
+  transform: translateY(-1px);
+}
+
+/* ===== Backend URL card (polish) ===== */
+.backendCard{
+  background:
+    radial-gradient(600px 220px at 10% 0%, rgb(255, 255, 255), transparent 55%),
+    radial-gradient(520px 220px at 95% 15%, rgb(255, 255, 255), transparent 55%),
+    rgba(255,255,255,.58);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--r);
+}
+
+.cardHead{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.chipBadge{
+  font-size: 11px;
+  font-weight: 1000;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.12);
+  background: rgba(255,255,255,.72);
+  box-shadow: var(--shadow2);
+}
+
+.backendGrid{
+  display:grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.control{
+  position: relative;
+  display:flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.inputLike{
+  width:100%;
+  padding: 11px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(20,40,90,.14);
+  background: rgba(255, 255, 255, 0.78);
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.65);
+  transition: box-shadow .15s ease, border-color .15s ease, transform .12s ease;
+}
+
+select.inputLike{
+  appearance: none;
+  padding-right: 36px;
+  cursor: pointer;
+}
+
+.rightIcon{
+  position:absolute;
+  right: 12px;
+  pointer-events:none;
+  color: rgba(11,23,51,.55);
+  font-weight: 900;
+}
+
+.inputLike:focus{
+  border-color: rgba(96,165,250,.55);
+  box-shadow: 0 0 0 4px rgba(125,211,252,.18), inset 0 1px 0 rgba(255,255,255,.65);
+}
+
+.help{ margin-top: 6px; }
+
+.btn.tiny{
+  padding: 9px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 1000;
+  white-space: nowrap;
+  background: linear-gradient(135deg, rgba(125,211,252,.22), rgba(253,186,116,.18));
+  border-color: rgba(20,40,90,.14);
+}
+
+.statusRow{
+  margin-top: 8px;
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.statusPill{
+  font-size: 11px;
+  font-weight: 1000;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.12);
+  background: rgba(255,255,255,.70);
+}
+
+.statusPill.idle{ color: rgba(11,23,51,.65); }
+.statusPill.ok{
+  background: rgba(166,243,209,.26);
+  border-color: rgba(16,185,129,.22);
+}
+.statusPill.bad{
+  background: rgba(253,186,116,.26);
+  border-color: rgba(245,158,11,.22);
+}
+.statusPill.spin::after{
+  content:"";
+  display:inline-block;
+  width: 10px; height: 10px;
+  margin-left: 8px;
+  border-radius: 999px;
+  border: 2px solid rgba(11,23,51,.18);
+  border-top-color: rgba(11,23,51,.55);
+  animation: spin 0.8s linear infinite;
+  vertical-align: -1px;
+}
+@keyframes spin{ to{ transform: rotate(360deg); } }
+
+/* mobile tighten */
+@media (max-width: 520px){
+  .control{ gap: 8px; }
+  .btn.tiny{ padding: 9px 10px; }
+}
+
+/* Brand */
+.brand{
+  display:flex;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 10px;
+  border-radius: var(--r2);
+  background:
+    linear-gradient(135deg, rgba(65, 198, 255, 0.792), rgba(237, 255, 73, 0.737)),
+    linear-gradient(135deg, rgb(194 210 238), rgb(194 210 238));
+  border: 1px solid rgba(0, 174, 159, 0);
+  position: relative;
+  overflow: hidden;
+}
+.brand:before{
+  content:"";
+  position:absolute;
+  inset:-2px;
+  background: radial-gradient(420px 160px at 30% 30%, rgba(255,255,255,.80), transparent 60%);
+  pointer-events:none;
+  opacity:.65;
+}
+.logoBox{
+  width:56px; height:56px;
+  border-radius:18px;
+  background: rgba(255,255,255,.80);
+  border:1px solid var(--stroke);
+  box-shadow: var(--shadow2);
+  overflow:hidden;
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 1;
+}
+.logoImg{
+  width:100%;
+  height:100%;
+  object-fit: cover;
+  display:block;
+}
+.brandText{ position: relative; z-index: 1; min-width: 0; }
+.title{ font-weight: 1000; letter-spacing:-.02em; }
+.sub{ font-size: 12px; color:var(--muted); margin-top:2px; }
+
+/* Cards */
+.card{
+  border-radius: var(--r);
+  padding: 12px;
+  border: 1px solid var(--stroke);
+  background: var(--card2);
+}
+.card .h{
+  font-weight: 1000;
+  letter-spacing: -.01em;
+  margin-bottom: 10px;
+}
+
+/* Drop */
+.drop{
+  border-radius: var(--r2);
+  border: 1px dashed rgba(20,40,90,.25);
+  background: rgba(255,255,255,.65);
+  padding: 12px;
+  transition: transform .15s ease, border-color .15s ease, background .15s ease;
+}
+.drop.isOver{
+  border-color: rgba(59,130,246,.50);
+  background: rgba(59,130,246,.06);
+  transform: translateY(-1px);
+}
+.dropInner{
+  display:flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  text-align:center;
+  padding: 10px 6px;
+}
+.drop .big{ font-weight: 1000; }
+.drop .hint{ font-size: 12px; color: var(--muted); }
+
+/* Buttons / Inputs */
+.row{ display:flex; gap: 10px; margin-top: 10px; width: 100%; justify-content: center; flex-wrap: wrap; }
+
+.btn{
+  appearance:none;
+  border: 1px solid var(--stroke2);
+  background: rgba(255,255,255,.78);
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor:pointer;
+  font-weight: 900;
+  transition: transform .12s ease, box-shadow .12s ease, background .12s ease, border-color .12s ease, opacity .12s ease;
+}
+.btn:hover{ transform: translateY(-1px); box-shadow: var(--shadow2); }
+.btn:disabled{ opacity:.55; cursor:not-allowed; transform:none; box-shadow:none; }
+.btn.primary{
+  border-color: rgba(59,130,246,.35);
+  background: linear-gradient(135deg, rgba(59,130,246,.92), rgba(34,197,94,.72), rgba(168,85,247,.70));
+  color: white;
+}
+.btn.danger{
+  border-color: rgba(239,68,68,.35);
+  background: rgba(239,68,68,.10);
+}
+.sep{ width:10px; }
+
+.field{ display:flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.field label{ font-size: 12px; color: var(--muted); font-weight: 900; }
+.field input{
+  width:100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border:1px solid var(--stroke2);
+  background: rgba(255,255,255,.78);
+  outline: none;
+}
+.field input:focus{
+  border-color: rgba(59,130,246,.45);
+  box-shadow: 0 0 0 3px rgba(59,130,246,.14);
+}
+
+.hintbar{
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgba(255,255,255,.62);
+}
+
+/* ===== Progress: NEW layout (PASTEL V2.1) ===== */
+.progressWrapV2{
+  display:grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  align-items: stretch;
+
+  --c1:#7dd3fc;
+  --c2:#60a5fa;
+  --c3:#a78bfa;
+  --c4:#fb7185;
+  --c5:#fdba74;
+}
+
+/* ring centered in its own block */
+.ringBlock{
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgba(255,255,255,.70);
+  border-radius: 18px;
+  padding: 12px;
+  box-shadow: var(--shadow2);
+  display:flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* ✅ smaller ring + thinner stroke */
+.ring{
+  --size: 150px;
+  --th: 6px;
+
+  width: var(--size);
+  height: var(--size);
+  border-radius: 999px;
+  position: relative;
+  display:grid;
+  place-items:center;
+
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,.94) 61%, transparent 62%),
+    conic-gradient(from -90deg, rgba(20,40,90,.10) 0 100%);
+
+  box-shadow:
+    0 16px 34px rgba(20,40,90,.10),
+    inset 0 1px 0 rgba(255,255,255,.65);
+}
+
+.ring:before{
+  content:"";
+  position:absolute;
+  inset: 0;
+  border-radius: 500px;
+
+  background:
+    conic-gradient(
+      from -90deg,
+      var(--c1) 0%,
+      var(--c2) 18%,
+      var(--c3) 42%,
+      var(--c4) 66%,
+      var(--c5) 92%,
+      var(--c2) 100%
+    );
+
+  -webkit-mask:
+    conic-gradient(from -90deg, #000 calc(var(--p) * 1%), transparent 0),
+    radial-gradient(circle, transparent calc(50% - var(--th)), #000 calc(50% - var(--th) + 1px));
+  -webkit-mask-composite: source-in;
+
+  mask:
+    conic-gradient(from -90deg, #000 calc(var(--p) * 1%), transparent 0),
+    radial-gradient(circle, transparent calc(50% - var(--th)), #000 calc(50% - var(--th) + 1px));
+  mask-composite: intersect;
+
+  filter:
+    drop-shadow(0 10px 18px rgba(125,211,252,.18))
+    drop-shadow(0 10px 18px rgba(253,186,116,.14));
+}
+
+.ringInner{ position: relative; z-index: 2; text-align:center; }
+.ringPct{ font-weight: 1100; font-size: 20px; letter-spacing:-.02em; }
+.ringSub{ margin-top: 3px; }
+
+.ringLegend{
+  display:flex;
+  gap: 8px;
+  align-items:center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.dot{
+  width: 10px; height: 10px;
+  border-radius: 999px;
+  display:inline-block;
+  border: 1px solid rgba(20,40,90,.10);
+}
+.dot.d1{ background: linear-gradient(135deg, var(--c1), var(--c2)); }
+.dot.d2{ background: linear-gradient(135deg, var(--c2), var(--c3)); }
+.dot.d3{ background: linear-gradient(135deg, var(--c4), var(--c5)); }
+
+/* ✅ KPI: 3 columns in one row (compact) */
+.kpisV2{
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgba(255,255,255,.70);
+  border-radius: 18px;
+  padding: 10px;
+  box-shadow: var(--shadow2);
+
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.kpiRow{
+  display:flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+
+  padding: 8px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(20,40,90,.10);
+  background:
+    linear-gradient(135deg, rgba(255,255,255,.86), rgba(255,255,255,.62)),
+    linear-gradient(135deg, rgba(125,211,252,.10), rgba(253,186,116,.08));
+}
+
+.kpiLeft{ display:flex; flex-direction: column; gap: 1px; min-width: 0; }
+.kpiLabel{ font-size: 11px; color: var(--muted); font-weight: 1000; }
+.kpiValue{ font-size: 15px; font-weight: 1100; letter-spacing: -.02em; line-height: 1.05; }
+
+.kpiMini{
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgba(246,249,255,.75);
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.pill{
+  font-size: 11px;
+  font-weight: 1100;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.12);
+  background: rgba(255,255,255,.72);
+  white-space: nowrap;
+}
+.pill.ok{
+  background: rgba(166,243,209,.26);
+  border-color: rgba(16,185,129,.20);
+}
+.pill.review{
+  background: rgba(253,186,116,.26);
+  border-color: rgba(245,158,11,.20);
+}
+
+@media (max-width: 520px){
+  .ring{ --size: 98px; --th: 7px; }
+  .kpisV2{ gap: 6px; }
+  .kpiRow{ padding: 7px 9px; }
+  .kpiValue{ font-size: 14px; }
+}
+
+/* progress bar */
+.progressLine{
+  display:flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.bar{
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.12);
+  background: rgba(255,255,255,.66);
+  overflow:hidden;
+}
+.barFill{
+  height:100%;
+  width:0%;
+  background: linear-gradient(90deg, var(--c1), var(--c2), var(--c3), var(--c4));
+  transition: width .25s ease;
+}
+
+.queueTitle{
+  display:flex;
+  justify-content: space-between;
+  align-items:center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+/* Queue */
+.queue{
+  display:flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 240px;
+  overflow:auto;
+  padding-right: 4px;
+}
+.qItem{
+  border: 1px solid var(--stroke);
+  background: rgba(255,255,255,.70);
+  border-radius: 16px;
+  padding: 10px 10px;
+  display:flex;
+  gap: 10px;
+  align-items:flex-start;
+}
+.badge{
+  font-size: 11px;
+  font-weight: 1000;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border:1px solid var(--stroke2);
+  background: rgba(255,255,255,.72);
+  white-space: nowrap;
+}
+.badge.ok{ background: var(--goodBg); border-color: rgba(16,185,129,.22); }
+.badge.review{ background: var(--warnBg); border-color: rgba(245,158,11,.22); }
+.qMeta{ min-width:0; }
+.qName{ font-weight: 1000; font-size: 13px; }
+.qSub{ font-size: 12px; color: var(--muted); margin-top:2px; word-break: break-word; }
+
+.footer{ margin-top:auto; padding-top: 8px; }
+
+/* Main */
+.main{
+  min-width: 0;
+  display:flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.topbar{
+  display:flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items:flex-end;
+  padding: 2px 2px;
+}
+.pageTitle{ font-size: 20px; font-weight: 1100; letter-spacing: -.02em; }
+.actions{ display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+.panel{
+  border-radius: var(--r);
+  padding: 12px;
+  min-height: 0;
+  display:flex;
+  flex-direction: column;
+}
+.panelHead{
+  display:flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items:center;
+  padding: 6px 6px 10px;
+  border-bottom: 1px solid rgba(20,40,90,.10);
+}
+.filters{ display:flex; gap: 8px; flex-wrap: wrap; }
+.chip{
+  font-size: 12px;
+  font-weight: 1000;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke2);
+  background: rgba(255,255,255,.70);
+  cursor: pointer;
+}
+.chip.active{
+  border-color: rgba(59,130,246,.35);
+  background: rgba(59,130,246,.10);
+}
+.search input{
+  width: 320px;
+  max-width: 52vw;
+  padding: 10px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke2);
+  background: rgba(255,255,255,.78);
+  outline:none;
+}
+.search input:focus{
+  border-color: rgba(59,130,246,.45);
+  box-shadow: 0 0 0 3px rgba(59,130,246,.14);
+}
+
+/* ===== Excel-like table ===== */
+.tableWrap{
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgba(255,255,255,.72);
+  margin-top: 12px;
+}
+
+table.excel{
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+table.excel thead th,
+table.excel tbody td{
+  min-width: 140px;
+}
+
+table.excel thead th{
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: rgba(255,255,255,.92);
+  border: 1px solid rgba(20,40,90,.14);
+  padding: 9px 10px;
+  text-align:left;
+  white-space: nowrap;
+  font-weight: 1000;
+}
+
+table.excel tbody td{
+  border: 1px solid rgba(20,40,90,.10);
+  padding: 8px 10px;
+  vertical-align: top;
+  background: rgba(255,255,255,.80);
+}
+
+table.excel tbody tr:nth-child(even) td{ background: rgba(246,249,255,.78); }
+table.excel tbody tr:hover td{ background: rgba(59,130,246,.06); }
+table.excel tbody tr.review td{ background: rgba(245,158,11,.10); }
+table.excel tbody tr.review:hover td{ background: rgba(245,158,11,.14); }
+
+.cell{
+  display:block;
+  max-width: 360px;
+  overflow:hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cellEdit{
+  width: 100%;
+  border: 1px solid rgba(59,130,246,.22);
+  background: rgba(255,255,255,.92);
+  border-radius: 10px;
+  padding: 6px 8px;
+  outline: none;
+  font: inherit;
+}
+.cellEdit:focus{
+  border-color: rgba(59,130,246,.55);
+  box-shadow: 0 0 0 3px rgba(59,130,246,.14);
+}
+
+.err{
+  margin-top: 4px;
+  color: rgba(180,70,0,.95);
+  font-weight: 1000;
+  font-size: 11px;
+  white-space: normal;
+}
+
+/* ✅ Sticky bottom horizontal scroller */
+.hScrollDock{
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin-top: 8px;
+  padding: 8px 8px;
+  border-radius: 14px;
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgba(255,255,255,.78);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 26px rgba(20,40,90,.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.hScrollBar{
+  flex: 1 1 auto;
+  height: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgba(246,249,255,.75);
+}
+.hScrollInner{
+  height: 1px;
+  width: 0px;
+}
+.hScrollHint{
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.hScrollBar::-webkit-scrollbar{ height: 12px; }
+.hScrollBar::-webkit-scrollbar-thumb{
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--c1), var(--c2), var(--c3), var(--c4));
+}
+.hScrollBar::-webkit-scrollbar-track{
+  background: rgba(255,255,255,.60);
+  border-radius: 999px;
+}
+
+/* Modal (History) */
+.modal{
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+  z-index: 50;
+}
+.modal.isOpen{ display: flex; }
+.modalBackdrop{
+  position:absolute;
+  inset:0;
+  background: rgba(10,25,60,.22);
+  backdrop-filter: blur(6px);
+}
+.modalCard{
+  position: relative;
+  width: min(900px, 96vw);
+  max-height: min(80vh, 720px);
+  border-radius: 22px;
+  padding: 14px;
+  display:flex;
+  flex-direction: column;
+}
+.modalHead{
+  display:flex;
+  justify-content: space-between;
+  align-items:flex-start;
+  gap: 10px;
+  padding: 6px 6px 12px;
+  border-bottom: 1px solid rgba(20,40,90,.10);
+}
+.modalTitle{ font-weight: 1100; font-size: 18px; letter-spacing: -.02em; }
+.modalBody{
+  padding: 12px 6px 6px;
+  overflow:auto;
+}
+.historyToolbar{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.historyList{
+  display:flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+.hItem{
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgba(255,255,255,.66);
+  border-radius: 18px;
+  padding: 12px 12px;
+  box-shadow: var(--shadow2);
+  display:flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.hLeft{ min-width: 0; }
+.hTitle{ font-weight: 1100; }
+.hSub{ margin-top: 4px; font-size: 12px; color: var(--muted); word-break: break-word; }
+.hRight{ display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
+.hPill{
+  font-size: 12px;
+  font-weight: 1000;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.12);
+  background: rgba(255,255,255,.72);
+}
+
+/* Mobile */
+@media (max-width: 980px){
+  .app{ grid-template-columns: 1fr; }
+  .sidebar{ position: static; }
+  .search input{ width: 240px; }
+}
+@media (max-width: 520px){
+  .app{ padding: 10px; gap: 10px; }
+  .sidebar{ padding: 12px; }
+  .panel{ padding: 10px; }
+  .topbar{ align-items:flex-start; flex-direction: column; }
+  .actions{ width: 100%; }
+  .actions .btn{ flex: 1; }
+  .search input{ width: 100%; max-width: 100%; }
+  .hScrollDock{ flex-direction: column; align-items: stretch; }
+  .hScrollHint{ text-align: center; }
+}
+
+/* line-clamp compatibility */
+.line-clamp{
+  display:-webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow:hidden;
+}
+
+/* =========================================================
+   ✅ BACKEND SNOW (แก้ชนกันให้หิมะตกแน่นอน)
+   - รองรับทั้ง .snowBox (emoji) และ .snowLayer (dots)
+   - z-index: base(0) → snow(1) → content(2)
+   ========================================================= */
+
+/* ===== Backend URL card: clean white + nicer dropdown ===== */
+/* ===== Backend card: typography tuning ===== */
+
+/* หัวข้อหลัก Backend URL → หนาและชัด */
+.backendSnow .h{
+  font-size: 16px;        /* พอดี ไม่ใหญ่เกิน */
+  font-weight: 1000;      /* หนาชัด */
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+}
+
+/* label ทั้งหมด → ไม่หนา */
+.backendSnow .field label{
+  font-size: 12px;
+  font-weight: 500;       /* ✅ ลดความหนา */
+  color: rgb(54, 115, 255);
+}
+
+/* dropdown text */
+.backendSnow select#backendSelect{
+  font-size: 14px;
+  font-weight: 500;       /* ✅ ไม่หนา */
+  color: #0b1733;
+}
+
+/* input text */
+.backendSnow input#backendUrl{
+  font-size: 14px;
+  font-weight: 500;       /* ✅ ไม่หนา */
+  color: #0b1733;
+}
+
+/* placeholder ให้เบากว่าข้อความจริง */
+.backendSnow input#backendUrl::placeholder{
+  font-weight: 400;
+  color: rgba(11,23,51,.45);
+}
+
+/* option ภายใน dropdown */
+.backendSnow select#backendSelect option{
+  font-weight: 500;
+}
+
+.backendSnow{
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #ffffff;                 /* ✅ พื้นหลังขาว */
+  box-shadow: var(--shadow2);
+}
+
+/* content stays above snow */
+.backendSnow > :not(.snowBox){
+  position: relative;
+  z-index: 2;
+}
+
+/* light top highlight */
+.backendSnow::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background: radial-gradient(700px 240px at 20% 0%, rgb(255, 255, 255), transparent 55%);
+  pointer-events:none;
+  z-index: 1;
+}
+
+/* ===== dropdown / input style (pretty) ===== */
+.backendSnow .field{ margin-top: 10px; }
+
+.backendSnow select#backendSelect,
+.backendSnow input#backendUrl{
+  width: 100%;
+  padding: 12px 42px 12px 14px;   /* ✅ เผื่อที่ลูกศรขวา */
+  border-radius: 14px;
+  border: 1px solid rgba(20,40,90,.16);
+  background: #ffffff;
+  color: var(--text);
+  font-weight: 900;
+  outline: none;
+  box-shadow:
+    0 8px 18px rgba(10,25,60,.06),
+    inset 0 1px 0 rgba(255,255,255,.9);
+  transition: border-color .15s ease, box-shadow .15s ease, transform .12s ease;
+}
+
+/* dropdown specifics */
+.backendSnow select#backendSelect{
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  cursor: pointer;
+
+  /* ✅ ลูกศรสวยๆ แบบ svg */
+  background-image:
+    linear-gradient(180deg, rgba(255,255,255,.95), rgba(255,255,255,1)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24'%3E%3Cpath fill='%230b1733' fill-opacity='0.55' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat, no-repeat;
+  background-position: 0 0, right 14px center;
+  background-size: auto, 18px 18px;
+}
+
+.backendSnow select#backendSelect:focus,
+.backendSnow input#backendUrl:focus{
+  border-color: rgba(37,99,235,.45);
+  box-shadow:
+    0 0 0 4px rgba(37,99,235,.12),
+    0 10px 22px rgba(10,25,60,.08);
+}
+
+/* nicer label spacing */
+.backendSnow .field label{
+  font-size: 12px;
+  color: rgba(11,23,51,.65);
+  font-weight: 1000;
+}
+
+/* ===== Snow container (less snow) ===== */
+.snowBox{
+  position:absolute;
+  inset:0;
+  z-index:1;
+  pointer-events:none;
+  overflow:hidden;
+
+  /* ✅ ทำให้หิมะอยู่ด้านบนๆ มากกว่า ไม่ทับ input */
+  mask-image: radial-gradient(120% 90% at 50% 0%, #000 45%, transparent 90%);
+  -webkit-mask-image: radial-gradient(120% 90% at 50% 0%, #000 45%, transparent 90%);
+}
+
+/* emoji snowflake (small + softer) */
+.snowflake{
+  position:absolute;
+  top:-18px;
+  font-size: 15px;                   /* ✅ เล็กลง */
+  line-height: 1;
+  opacity: .45;                      /* ✅ จางลง */
+  color: rgba(10, 132, 255, 0.852);       /* ✅ ฟ้าอ่อน */
+  filter: drop-shadow(0 6px 14px rgba(59,130,246,.10));
+  will-change: transform;
+  animation: snow-fall linear infinite;
+}
+
+@keyframes snow-fall{
+  from{ transform: translate3d(0, -12px, 0); }
+  to{   transform: translate3d(var(--drift, 0px), calc(100% + 24px), 0); }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .snowflake{ animation:none; opacity:.18; }
+}
+
+/* -----------------------------
+   B) Snow: dot system (ถ้ายังอยากใช้ .snowLayer/.flake)
+   - ไม่ชนกับ emoji แล้ว
+   ----------------------------- */
+.snowLayer{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  z-index: 1;
+  background: radial-gradient(800px 220px at 50% 0%, rgba(120, 208, 255, 0.861), transparent 60%);
+}
+
+.flake{
+  position:absolute;
+  top:-12px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.92);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.20), 0 10px 30px rgba(113, 177, 255, 0.642);
+  opacity: .9;
+  filter: blur(.1px);
+  animation-name: snowFall, snowDrift;
+  animation-timing-function: linear, ease-in-out;
+  animation-iteration-count: infinite, infinite;
+}
+
+/* Variation: sizes */
+.flake.f2, .flake.f7, .flake.f12, .flake.f18 { width: 4px; height: 4px; opacity:.75; }
+.flake.f4, .flake.f9, .flake.f15, .flake.f20 { width: 8px; height: 8px; opacity:.55; }
+
+/* Place flakes (x) + duration + delay */
+.flake.f1{ left: 6%;  animation-duration: 6.8s, 2.4s; animation-delay: .2s, 0s; }
+.flake.f2{ left: 14%; animation-duration: 8.2s, 3.2s; animation-delay: 1.1s, 0s; }
+.flake.f3{ left: 22%; animation-duration: 7.4s, 2.8s; animation-delay: .6s, 0s; }
+.flake.f4{ left: 30%; animation-duration: 9.2s, 3.6s; animation-delay: .1s, 0s; }
+.flake.f5{ left: 38%; animation-duration: 6.2s, 2.6s; animation-delay: 1.4s, 0s; }
+
+.flake.f6{ left: 46%; animation-duration: 8.8s, 3.0s; animation-delay: .8s, 0s; }
+.flake.f7{ left: 54%; animation-duration: 7.0s, 2.2s; animation-delay: .3s, 0s; }
+.flake.f8{ left: 62%; animation-duration: 9.6s, 3.8s; animation-delay: 1.0s, 0s; }
+.flake.f9{ left: 70%; animation-duration: 7.8s, 2.9s; animation-delay: .5s, 0s; }
+.flake.f10{left: 78%; animation-duration: 6.6s, 2.5s; animation-delay: 1.6s, 0s; }
+
+.flake.f11{left: 86%; animation-duration: 8.4s, 3.1s; animation-delay: .4s, 0s; }
+.flake.f12{left: 92%; animation-duration: 7.2s, 2.7s; animation-delay: 1.2s, 0s; }
+.flake.f13{left: 10%; animation-duration: 10.2s, 4.1s; animation-delay: 2.0s, 0s; }
+.flake.f14{left: 26%; animation-duration: 11.0s, 4.3s; animation-delay: 2.3s, 0s; }
+.flake.f15{left: 44%; animation-duration: 10.6s, 4.0s; animation-delay: 2.1s, 0s; }
+
+.flake.f16{left: 58%; animation-duration: 11.6s, 4.5s; animation-delay: 2.6s, 0s; }
+.flake.f17{left: 74%; animation-duration: 10.8s, 4.2s; animation-delay: 2.2s, 0s; }
+.flake.f18{left: 88%; animation-duration: 12.4s, 4.7s; animation-delay: 2.9s, 0s; }
+.flake.f19{left: 34%; animation-duration: 12.0s, 4.4s; animation-delay: 2.7s, 0s; }
+.flake.f20{left: 66%; animation-duration: 13.0s, 5.0s; animation-delay: 3.2s, 0s; }
+
+@keyframes snowFall{
+  from{ transform: translateY(-10px); }
+  to{   transform: translateY(calc(100% + 14px)); }
+}
+@keyframes snowDrift{
+  0%{ margin-left: 0px; }
+  50%{ margin-left: 10px; }
+  100%{ margin-left: 0px; }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce){
+  .flake{ animation: none; opacity:.35; }
+  .snowflake{ animation: none; opacity:.25; }
+}
+
+/* ================================
+   Backend URL – Glass Pastel Style
+   ================================ */
+
+.backendCard{
+  padding: 14px 14px 12px;
+  border-radius: var(--r2);
+  background:
+    linear-gradient(
+      135deg,
+      rgb(255, 190, 150),
+      rgb(160, 211, 255)
+    );
+  border: 1px solid rgba(20, 40, 90, 0);
+  box-shadow: var(--shadow2);
+}
+
+/* ---------- header ---------- */
+
+.backendHeader{
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.backendHeader::-webkit-details-marker{ display:none; }
+
+.backendTitleWrap{
+  flex: 1;
+  min-width: 0;
+}
+
+.backendTitle{
+  font-size: 15px;
+  font-weight: 1000;
+  color: #ffffff;
+  letter-spacing: -.01em;
+}
+
+.backendSub{
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(11,23,51,.6);
+  margin-top: 2px;
+}
+
+/* underline accent */
+.backendUnderline{
+  margin-top: 8px;
+  height: 3px;
+  width: 100%;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      90deg,
+      #ff9f70,
+      #ffd36b,
+      #6be3ff,
+      #8b7cff
+    );
+  opacity: .9;
+}
+
+/* toggle button */
+.backendToggle{
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: rgba(255,255,255,.85);
+  border: 1px solid rgba(20,40,90,.14);
+  box-shadow: 0 10px 22px rgba(10,25,60,.12);
+}
+
+.backendToggle .chev{
+  font-size: 14px;
+  font-weight: 900;
+  transition: transform .2s ease;
+}
+
+/* rotate when open */
+.backendCard[open] .chev{
+  transform: rotate(180deg);
+}
+
+/* ---------- body ---------- */
+
+.backendBody{
+  padding-top: 14px;
+}
+
+.backendCard:not([open]) .backendBody{
+  display: none;
+}
+
+/* input/select polish */
+.backendBody .field select,
+.backendBody .field input{
+  background: rgba(255,255,255,.9);
+  border: 1px solid rgba(20,40,90,.14);
+}
+
+/* mobile */
+@media (max-width: 520px){
+  .backendTitle{ font-size: 14px; }
+  .backendSub{ font-size: 10px; }
+}
+
+/* ================================
+   ✅ Settings (Pre-Upload Filter) Card
+   - background image only inside this card
+   - keep your existing ids/data-attrs for JS
+   ================================ */
+
+.settingsCard{
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r);
+  border: 1px solid rgba(20,40,90,.12);
+  background: rgba(255, 255, 255, 0);
+  box-shadow: var(--shadow2);
+}
+
+/* background image (เฉพาะการ์ดนี้) */
+.settingsCard.settingsPhoto{
+  background-image: url("https://i.pinimg.com/736x/2f/4e/42/2f4e4299cd135ad92c494b560f017c41.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* overlay ให้อ่านง่าย + glass glow */
+.settingsCard::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:
+    radial-gradient(900px 260px at 18% 0%, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0) 55%, rgba(255,255,255,.30)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0));
+  pointer-events:none;
+  z-index: 0;
+}
+
+.settingsCard > *{
+  position: relative;
+  z-index: 1;
+}
+
+/* layout */
+.settingsGrid{
+  display: grid;
+  gap: 12px;
+}
+
+.settingsGroup{
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.463);
+  background: rgba(255, 255, 255, 0.277);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.329);
+}
+
+.settingsDivider{
+  height: 1px;
+  background: rgba(255, 255, 255, 0.805);
+  margin: 2px 2px;
+}
+
+/* label row */
+.settingsLabelRow{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.settingsCard .field label,
+.settingsLabelRow label{
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.914);
+  font-weight: 900;
+}
+
+.miniPill{
+  font-size: 11px;
+  font-weight: 1000;
+  padding: 5px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.12);
+  background: rgba(255,255,255,.72);
+  color: rgba(11,23,51,.72);
+}
+
+/* chips: bigger + nicer */
+.chipsBig{
+  justify-content: flex-start;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.chipSpacer{
+  flex: 1 1 auto;
+}
+
+/* override chip look only inside settings card */
+.settingsCard .chip{
+  padding: 8px 11px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(20,40,90,.14);
+  background: rgba(255,255,255,.72);
+  box-shadow: 0 10px 22px rgba(10,25,60,.06);
+  transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease, background .12s ease;
+}
+
+.settingsCard .chip:hover{
+  transform: translateY(-1px);
+  box-shadow: 0 14px 26px rgba(10,25,60,.10);
+}
+
+/* selected state (JS เดิมควร toggle class "active" อยู่แล้ว) */
+.settingsCard .chip.active{
+  border-color: rgb(242, 255, 2);
+  background: rgba(255, 255, 0, 0.979);
+}
+
+/* ghost buttons */
+.settingsCard .chip.ghost{
+  background: rgb(255, 255, 255);
+  border-style: dashed;
+  opacity: .95;
+}
+
+/* hints */
+.settingsHint{
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 12px;
+  border: 1px solid rgba(20,40,90,.10);
+  background: rgb(255, 255, 255);
+}
+
+/* mobile: tighter + keep buttons visible */
+@media (max-width: 520px){
+  .settingsGroup{ padding: 9px; }
+  .settingsLabelRow{ align-items:flex-start; }
+  .settingsCard .chip{ padding: 8px 10px; }
+  .chipSpacer{ display:none; } /* ให้ All/Clear ต่อท้ายไปเลยบนมือถือ */
+}
+
+/* ================================
+   ✅ App Header Banner (GIF background)
+   ================================ */
+
+.appHeader{
+  position: relative;
+  height: 120px;
+  margin: 14px;
+  border-radius: 22px;
+  overflow: hidden;
+
+  background-image: url("https://i.pinimg.com/originals/22/04/90/220490938e3c9a8b7f1f2c90017da44f.gif");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+
+  border: 1px solid rgba(20,40,90,.12);
+  box-shadow: 0 20px 60px rgba(10,25,60,.18);
+}
+
+/* glass overlay */
+.appHeaderOverlay{
+  position:absolute;
+  inset:0;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255,255,255,.55),
+      rgba(255,255,255,.25) 40%,
+      rgba(255,255,255,.65)
+    );
+  backdrop-filter: blur(6px);
+  z-index: 1;
+}
+
+/* content */
+.appHeaderContent{
+  position: relative;
+  z-index: 2;
+  height: 100%;
+  display:flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align:center;
+  padding: 12px;
+}
+
+.appHeaderTitle{
+  font-size: 24px;
+  font-weight: 1100;
+  letter-spacing: -.02em;
+  color: #0b1733;
+  text-shadow: 0 6px 16px rgba(10,25,60,.25);
+}
+
+.appHeaderSub{
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(11,23,51,.75);
+}
+
+/* mobile */
+@media (max-width: 520px){
+  .appHeader{
+    height: 96px;
+    margin: 10px;
+  }
+  .appHeaderTitle{ font-size: 18px; }
+  .appHeaderSub{ font-size: 12px; }
+}
+
+/* ================================
+   Topbar Sky Decor (v2 - Sky BG + Flock)
+   ================================ */
+
+.topbar{
+  position: relative;
+  overflow: hidden;
+  padding-top: 10px;
+}
+
+/* content ต้องอยู่เหนือของตกแต่ง */
+.topbar > *{
+  position: relative;
+  z-index: 2;
+}
+
+/* ชั้นตกแต่ง: อยู่หลังตัวหนังสือ */
+.skyDecor{
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 6px;
+  height: 54px;             /* สูงขึ้นนิด ให้เห็น sky สวย */
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: 14px;
+
+  /* ✅ ไล่สีท้องฟ้าแบบนุ่ม (ไม่มีเส้นขีด) */
+  background:
+    radial-gradient(120px 60px at 18% 25%, rgba(255,255,255,.70), rgba(255,255,255,0) 70%),
+    radial-gradient(160px 80px at 62% 22%, rgba(255,255,255,.55), rgba(255,255,255,0) 72%),
+    linear-gradient(180deg,
+      rgba(195,232,255,.95) 0%,
+      rgba(210,244,255,.86) 45%,
+      rgba(235,252,255,.70) 100%
+    );
+
+  /* ✅ กัน “เส้นขีดๆ” จากการ anti-aliasing */
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ❌ ไม่ใช้เส้นใต้แล้ว */
+.skyUnderline{ display:none !important; }
+
+/* ดวงอาทิตย์: ย้ายไปซ้ายขึ้นนิด + นุ่ม */
+.skyDecor .sun{
+  position: absolute;
+  left: 250px;      /* จาก 250px -> ชิดซ้ายขึ้น */
+  top: 6px;
+  width: 40px;
+  height:40px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%,
+    rgba(255,255,255,.96),
+    rgba(255,232,150,.96) 42%,
+    rgba(255,185,80,.78) 74%,
+    rgba(255,185,80,0) 100%
+  );
+  box-shadow: 0 10px 22px rgba(255,190,90,.22);
+  opacity: .95;
+}
+
+/* เมฆ: เห็นชัดขึ้น + เลื่อนลงมา */
+.skyDecor .cloud{
+  position: absolute;
+  top: 20px;                 /* ✅ ลงมาชัด */
+  width: 92px;               /* ✅ ใหญ่ขึ้นนิด */
+  height: 26px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.92);
+  box-shadow:
+    0 12px 22px rgba(40,90,160,.10),
+    inset 0 -2px 0 rgba(255,255,255,.60);
+  filter: blur(.12px);
+  opacity: .96;
+}
+
+/* ปุ่มนูนของเมฆ */
+.skyDecor .cloud::before,
+.skyDecor .cloud::after{
+  content:"";
+  position:absolute;
+  background: rgba(255,255,255,.94);
+  border-radius: 999px;
+}
+.skyDecor .cloud::before{
+  width: 26px; height: 26px;
+  left: 14px; top: -12px;
+}
+.skyDecor .cloud::after{
+  width: 38px; height: 38px;
+  left: 34px; top: -22px;
+}
+
+/* เมฆเลื่อนช้าลงมาก (จาก 18/24/30s -> 38/52/68s) */
+@keyframes skyDriftLR{
+  0%   { transform: translateX(-180px); }
+  100% { transform: translateX(calc(100vw + 260px)); }
+}
+.skyDecor .cloud.c1{ top: 22px; left: -200px; animation: skyDriftLR 38s linear infinite; opacity:.95; }
+.skyDecor .cloud.c2{ top: 14px; left: -420px; animation: skyDriftLR 52s linear infinite; opacity:.82; transform: translateX(-200px) scale(.92); }
+.skyDecor .cloud.c3{ top: 28px; left: -680px; animation: skyDriftLR 68s linear infinite; opacity:.74; transform: translateX(-260px) scale(.86); }
+
+/* ------------------------------
+   Flock of birds (ฝูงนก)
+   ------------------------------ */
+
+/* ตัวนกแบบ V */
+.skyDecor .bird{
+  position: absolute;
+  width: 18px;
+  height: 8px;
+  opacity: .58;
+}
+.skyDecor .bird::before,
+.skyDecor .bird::after{
+  content:"";
+  position:absolute;
+  width: 9px;
+  height: 6px;
+  border: 2px solid rgba(40,70,120,.62);
+  border-color: rgba(40,70,120,.62) transparent transparent transparent;
+  border-radius: 50%;
+}
+.skyDecor .bird::before{ left:0;  transform: rotate(18deg); }
+.skyDecor .bird::after { right:0; transform: rotate(-18deg); }
+
+/* ฝูงนกบินช้าลง + ลอยขึ้นลงนิด ๆ */
+@keyframes flockFly{
+  0%   { transform: translateX(-120px) translateY(0)   scale(.92); opacity: 0; }
+  6%   { opacity: .55; }
+  50%  { transform: translateX(50vw) translateY(-3px)  scale(.96); opacity: .60; }
+  100% { transform: translateX(calc(100vw + 200px)) translateY(2px) scale(1); opacity: 0; }
+}
+
+/* กำหนดนกหลายตัวให้เป็น “ฝูง” */
+.skyDecor .bird.f1{ top: 10px; left:-160px; animation: flockFly 26s linear infinite; }
+.skyDecor .bird.f2{ top: 16px; left:-220px; animation: flockFly 28s linear infinite; opacity:.46; transform: scale(.85); }
+.skyDecor .bird.f3{ top: 8px;  left:-280px; animation: flockFly 30s linear infinite; opacity:.42; transform: scale(.82); }
+.skyDecor .bird.f4{ top: 20px; left:-340px; animation: flockFly 32s linear infinite; opacity:.40; transform: scale(.80); }
+.skyDecor .bird.f5{ top: 12px; left:-400px; animation: flockFly 34s linear infinite; opacity:.38; transform: scale(.78); }
+
+/* เพิ่มดีเลย์ให้ดูเป็นฝูง ไล่มาเรื่อย ๆ */
+.skyDecor .bird.f2{ animation-delay: 2s; }
+.skyDecor .bird.f3{ animation-delay: 5s; }
+.skyDecor .bird.f4{ animation-delay: 8s; }
+.skyDecor .bird.f5{ animation-delay: 11s; }

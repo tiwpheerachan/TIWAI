@@ -1,0 +1,466 @@
+# -*- coding: utf-8 -*-
+# backend/app/main.py
+from __future__ import annotations
+
+import io
+import os
+import json
+import time
+import inspect
+import logging
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, JSONResponse
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# ✅ Logging defaults (safe)
+# ============================================================
+def _setup_logging() -> None:
+    """
+    Make logging usable out of the box (Render/Railway/Local).
+    """
+    level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        level = "INFO"
+    logging.basicConfig(
+        level=getattr(logging, level),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+_setup_logging()
+
+# ============================================================
+# ✅ Load .env intelligently
+# ============================================================
+def _load_env_safely() -> None:
+    """
+    โหลด .env แบบฉลาด:
+    - รองรับรันจาก backend/ หรือรันจาก root project
+    - ไม่พังถ้าไม่มี python-dotenv (ยังรันได้ด้วย ENV ของระบบ)
+    """
+    try:
+        from dotenv import load_dotenv  # type: ignore
+    except Exception:
+        return
+
+    here = Path(__file__).resolve()
+    backend_dir = here.parents[1]          # .../backend/app -> parents[1] = .../backend
+    app_dir = here.parent                 # .../backend/app
+    project_root_guess = backend_dir.parent
+
+    candidates = [
+        backend_dir / ".env",
+        app_dir / ".env",
+        project_root_guess / ".env",
+    ]
+
+    for p in candidates:
+        if p.exists():
+            load_dotenv(dotenv_path=str(p), override=False)
+            logger.info("Loaded .env: %s", str(p))
+            return
+
+    # fallback: search default
+    load_dotenv(override=False)
+
+_load_env_safely()
+
+# ============================================================
+# App imports (after ENV)
+# ============================================================
+from .services.job_service import JobService
+from .services.export_service import export_rows_to_csv_bytes, export_rows_to_xlsx_bytes
+
+# ============================================================
+# FastAPI app
+# ============================================================
+app = FastAPI(title="PDF Accounting Importer (PEAK A–U)")
+
+# ============================================================
+# CORS (configurable)
+# ============================================================
+cors_origins = os.getenv("CORS_ORIGINS", "*")
+if cors_origins.strip() == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [o.strip() for o in cors_origins.split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+jobs = JobService()
+
+# ============================================================
+# ✅ Helpers: safe bool/env + tiny utils
+# ============================================================
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+def _parse_bool_field(raw: Optional[str], default: bool) -> bool:
+    """
+    Parse bool from FormData/str:
+      - "1/0", "true/false", "yes/no", "on/off"
+      - None/"" => default
+    """
+    if raw is None:
+        return default
+    s = str(raw).strip().lower()
+    if s == "":
+        return default
+    return s in {"1", "true", "yes", "y", "on"}
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+def _safe_filename(name: str) -> str:
+    # Keep original for matching but ensure not empty
+    n = (name or "").strip()
+    return n if n else "unknown"
+
+# ============================================================
+# ✅ Error handler (nice JSON)
+# ============================================================
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    debug = _env_bool("DEBUG", default=False)
+    payload: Dict[str, Any] = {
+        "ok": False,
+        "error": "internal_error",
+        "message": str(exc) if debug else "Internal server error",
+        "path": str(request.url),
+        "method": request.method,
+    }
+    try:
+        logger.exception("Unhandled error: %s %s", request.method, request.url)
+    except Exception:
+        pass
+    return JSONResponse(status_code=500, content=payload)
+
+# ============================================================
+# ✅ Helpers: cfg parsing + safe service call
+# ============================================================
+def _parse_list_field(raw: Optional[str]) -> List[str]:
+    """
+    รองรับ:
+      - JSON string: '["SHD","RABBIT"]'
+      - comma-separated: 'SHD,RABBIT'
+      - single: 'SHD'
+      - empty/None -> []
+    """
+    if raw is None:
+        return []
+    s = str(raw).strip()
+    if not s:
+        return []
+
+    # Try JSON
+    if (s.startswith("[") and s.endswith("]")) or (s.startswith('"') and s.endswith('"')):
+        try:
+            v = json.loads(s)
+            if isinstance(v, list):
+                out: List[str] = []
+                for x in v:
+                    xs = str(x).strip()
+                    if xs:
+                        out.append(xs)
+                return out
+            if isinstance(v, str):
+                return [v.strip()] if v.strip() else []
+        except Exception:
+            pass
+
+    # Fallback: comma separated
+    if "," in s:
+        return [x.strip() for x in s.split(",") if x.strip()]
+
+    return [s]
+
+def _normalize_cfg(
+    client_tags: Optional[str],
+    client_tax_ids: Optional[str],
+    platforms: Optional[str],
+) -> Dict[str, Any]:
+    """
+    ทำ cfg ให้สะอาด + normalize ตัวอักษร
+    - client_tags: uppercase (SHD/RABBIT/TOPONE/HASHTAG)
+    - platforms: lowercase (shopee/lazada/tiktok/spx/ads/other/unknown)
+    - client_tax_ids: digits keep as-is (or whatever user sends)
+    """
+    tags = [t.upper().strip() for t in _parse_list_field(client_tags)]
+    plats = [p.lower().strip() for p in _parse_list_field(platforms)]
+    taxs = [t.strip() for t in _parse_list_field(client_tax_ids)]
+
+    def uniq(seq: List[str]) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for x in seq:
+            if x and x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
+
+    return {
+        "client_tags": uniq(tags),
+        "client_tax_ids": uniq(taxs),
+        "platforms": uniq(plats),
+    }
+
+def _call_if_supported(obj: Any, method_name: str, /, *args: Any, **kwargs: Any) -> Any:
+    """
+    เรียก method แบบ backward-compatible:
+    - ถ้า method มีพารามิเตอร์ตาม kwargs -> ส่งให้
+    - ถ้าไม่รองรับ -> ตัด kwargs ออกแล้วเรียกแบบเดิม
+    """
+    fn = getattr(obj, method_name, None)
+    if fn is None:
+        raise AttributeError(f"{type(obj).__name__}.{method_name} not found")
+
+    try:
+        sig = inspect.signature(fn)
+        params = sig.parameters
+        supported = {k: v for k, v in kwargs.items() if k in params}
+        return fn(*args, **supported)
+    except Exception:
+        return fn(*args)
+
+# ============================================================
+# ✅ Streaming read with max bytes (prevent RAM blow)
+# ============================================================
+async def _read_uploadfile_safely(f: UploadFile, max_bytes: int) -> bytes:
+    """
+    อ่านไฟล์แบบปลอดภัย + enforce max bytes ระหว่างอ่าน
+    แก้ปัญหาอ่านทั้งก้อนแล้วค่อยเช็ค (ทำให้ RAM พังง่าย)
+    """
+    buf = io.BytesIO()
+    total = 0
+    chunk_size = int(os.getenv("UPLOAD_READ_CHUNK_BYTES", "1048576"))  # 1MB default
+
+    while True:
+        chunk = await f.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large: {f.filename} (max {max_bytes/1024/1024:.1f} MB)",
+            )
+        buf.write(chunk)
+
+    return buf.getvalue()
+
+# ============================================================
+# ✅ Minimal platform whitelist (align with your classifier labels)
+# ============================================================
+ALLOWED_PLATFORMS = {"shopee", "lazada", "tiktok", "spx", "ads", "other", "unknown"}
+
+# ============================================================
+# Routes
+# ============================================================
+@app.get("/api/health")
+def health():
+    """
+    Health check + config summary (ไม่โชว์ secrets)
+    """
+    return {
+        "ok": True,
+        "time_ms": _now_ms(),
+        "ai": {
+            # NOTE: your project uses both ENABLE_AI_EXTRACT and ENABLE_LLM in some places
+            "enabled": _env_bool("ENABLE_AI_EXTRACT", default=False) or _env_bool("ENABLE_LLM", default=False),
+            "provider": os.getenv("AI_PROVIDER", ""),
+            "model": os.getenv("OPENAI_MODEL", ""),
+            "repair_pass": _env_bool("AI_REPAIR_PASS", default=False),
+            "fill_missing": _env_bool("AI_FILL_MISSING", default=True),
+            "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
+        },
+        "ocr": {
+            "enabled": _env_bool("ENABLE_OCR", default=True),
+            "provider": os.getenv("OCR_PROVIDER", "paddle"),
+        },
+        "cors": {"origins": allow_origins},
+        "limits": {
+            "max_files": int(os.getenv("MAX_UPLOAD_FILES", "500")),
+            "max_file_mb": float(os.getenv("MAX_FILE_MB", "25")),
+        },
+    }
+
+@app.get("/api/config")
+def config_check():
+    """
+    ตรวจว่า ENV สำคัญมาไหม (ไม่เปิดเผย key จริง)
+    """
+    return {
+        "ok": True,
+        "env": {
+            "DEBUG": os.getenv("DEBUG", ""),
+            "LOG_LEVEL": os.getenv("LOG_LEVEL", ""),
+            "ENABLE_AI_EXTRACT": os.getenv("ENABLE_AI_EXTRACT", ""),
+            "ENABLE_LLM": os.getenv("ENABLE_LLM", ""),
+            "AI_PROVIDER": os.getenv("AI_PROVIDER", ""),
+            "OPENAI_MODEL": os.getenv("OPENAI_MODEL", ""),
+            "AI_REPAIR_PASS": os.getenv("AI_REPAIR_PASS", ""),
+            "AI_FILL_MISSING": os.getenv("AI_FILL_MISSING", ""),
+            "OCR_PROVIDER": os.getenv("OCR_PROVIDER", ""),
+            "ENABLE_OCR": os.getenv("ENABLE_OCR", ""),
+            "CORS_ORIGINS": os.getenv("CORS_ORIGINS", ""),
+            "OPENAI_API_KEY_present": bool(os.getenv("OPENAI_API_KEY")),
+        },
+    }
+
+@app.post("/api/upload")
+async def upload(
+    files: List[UploadFile] = File(...),
+    client_tags: Optional[str] = Form(None),
+    client_tax_ids: Optional[str] = Form(None),
+    platforms: Optional[str] = Form(None),
+
+    # ✅ NEW: compute_wht toggle from request
+    # - True  => คำนวณภาษีหัก ณ ที่จ่าย (บังคับ P_wht/S_pnd ถ้ามี WHT)
+    # - False => ไม่คำนวณ/ไม่ใส่ (P_wht=0, S_pnd="")
+    compute_wht: Optional[str] = Form(None),
+):
+    """
+    Upload multiple PDFs/images and process as a job.
+
+    ✅ Robustness:
+    - parse cfg from FormData (client/platform)
+    - ✅ receive compute_wht and put into cfg
+    - enforce limits (max files, max per-file size)
+    - never create "empty job" (prevents UI state=error / rows=0)
+    - pass filename everywhere
+    - backward-compatible with old/new JobService signatures
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+
+    cfg = _normalize_cfg(client_tags, client_tax_ids, platforms)
+
+    # ✅ compute_wht into cfg (default True to match your requirement)
+    # You can change default by ENV COMPUTE_WHT_DEFAULT=0/1
+    default_compute = _env_bool("COMPUTE_WHT_DEFAULT", default=True)
+    cfg["compute_wht"] = _parse_bool_field(compute_wht, default=default_compute)
+
+    # keep only allowed platforms
+    if cfg.get("platforms"):
+        cfg["platforms"] = [p for p in cfg["platforms"] if p in ALLOWED_PLATFORMS]
+
+    # limits
+    max_files = int(os.getenv("MAX_UPLOAD_FILES", "500"))
+    if len(files) > max_files:
+        raise HTTPException(status_code=400, detail=f"Too many files (max {max_files})")
+
+    max_mb = float(os.getenv("MAX_FILE_MB", "25"))
+    max_bytes = int(max_mb * 1024 * 1024)
+
+    # create job (attach cfg if supported)
+    job_id = _call_if_supported(jobs, "create_job", cfg=cfg)
+
+    added = 0
+    skipped = 0
+    reasons: List[str] = []
+
+    for f in files:
+        filename = _safe_filename(f.filename or "")
+
+        ctype = (f.content_type or "").lower()
+        # accept unknown, pdf, images
+        if ctype and not (
+            ctype.startswith("application/pdf")
+            or ctype.startswith("image/")
+            or ctype == "application/octet-stream"
+        ):
+            skipped += 1
+            reasons.append(f"skip:{filename}:unsupported_content_type:{ctype}")
+            continue
+
+        content = await _read_uploadfile_safely(f, max_bytes=max_bytes)
+        if not content:
+            skipped += 1
+            reasons.append(f"skip:{filename}:empty")
+            continue
+
+        _call_if_supported(
+            jobs,
+            "add_file",
+            job_id=job_id,
+            filename=filename,
+            content_type=f.content_type or "",
+            content=content,
+            cfg=cfg,  # ✅ includes compute_wht now
+        )
+        added += 1
+
+    if added == 0:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "All uploaded files were invalid/empty", "reasons": reasons[:50]},
+        )
+
+    # start processing (attach cfg if supported)
+    _call_if_supported(jobs, "start_processing", job_id, cfg=cfg)
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "cfg": cfg,
+        "files_added": added,
+        "files_skipped": skipped,
+        "skip_reasons_sample": reasons[:25],
+    }
+
+@app.get("/api/job/{job_id}")
+def get_job(job_id: str):
+    job = jobs.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+@app.get("/api/job/{job_id}/rows")
+def get_rows(job_id: str):
+    rows = jobs.get_rows(job_id)
+    if rows is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    # always return ok true; UI expects rows array
+    return {"ok": True, "rows": rows}
+
+@app.get("/api/export/{job_id}.csv")
+def export_csv(job_id: str):
+    rows = jobs.get_rows(job_id)
+    if rows is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    data = export_rows_to_csv_bytes(rows)
+    filename = f"peak_import_{job_id}.csv"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+@app.get("/api/export/{job_id}.xlsx")
+def export_xlsx(job_id: str):
+    rows = jobs.get_rows(job_id)
+    if rows is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    data = export_rows_to_xlsx_bytes(rows)
+    filename = f"peak_import_{job_id}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
